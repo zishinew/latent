@@ -835,7 +835,93 @@ async function generateEvent(context: Record<string, unknown>): Promise<Generate
   const outputText = payload.output
     ?.flatMap((item) => item.content ?? [])
     .find((content) => content.type === "output_text")?.text;
-  return outputText ? (JSON.parse(outputText) as GeneratedEvent) : null;
+  if (!outputText) return null;
+  const event = JSON.parse(outputText) as GeneratedEvent & { narrative?: unknown };
+  // Qwen sometimes uses `narrative` for the prose field even under a strict
+  // schema. Preserve it as the canonical scene text before validation.
+  if (typeof event.text !== "string" && typeof event.narrative === "string") {
+    event.text = event.narrative;
+  }
+  return event;
+}
+
+async function repairSceneChoices(
+  event: GeneratedEvent,
+  context: Record<string, unknown>,
+): Promise<GeneratedEvent> {
+  if (event.sceneStatus === "end" || event.choices?.length === 3) return event;
+
+  const apiKey = getQwenApiKey();
+  if (!apiKey || typeof event.text !== "string") return event;
+  const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "qwen3.7-plus",
+      store: false,
+      enable_thinking: false,
+      input: [
+        {
+          role: "system",
+          content:
+            "Write exactly three short, distinct player actions for this current LATENT scene. Each action states only an immediate attempt; do not narrate an outcome. Return only the required JSON.",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            scene: event.text,
+            player: context.player,
+            location: event.location ?? null,
+          }),
+        },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "scene_choices",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              choices: {
+                type: "array",
+                minItems: 3,
+                maxItems: 3,
+                items: { type: "string" },
+              },
+            },
+            required: ["choices"],
+          },
+        },
+      },
+    }),
+  });
+  if (!response.ok) return event;
+  const payload = (await response.json()) as {
+    output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+  };
+  const outputText = payload.output
+    ?.flatMap((item) => item.content ?? [])
+    .find((content) => content.type === "output_text")?.text;
+  if (!outputText) return event;
+
+  try {
+    const result = JSON.parse(outputText) as { choices?: unknown };
+    if (
+      Array.isArray(result.choices) &&
+      result.choices.length === 3 &&
+      result.choices.every((choice) => typeof choice === "string")
+    ) {
+      return { ...event, sceneStatus: "continue", choices: result.choices };
+    }
+  } catch {
+    // Keep the original output; the normal validator will return a clear error.
+  }
+  return event;
 }
 
 function normalizeGeneratedEvent(
@@ -846,16 +932,43 @@ function normalizeGeneratedEvent(
   pacing: PacingDirective,
   story: StoryContext,
 ): WorldEvent | null {
-  if (event.sceneStatus === "continue" && event.choices.length !== 3) return null;
-  if (event.sceneStatus === "end" && event.choices.length !== 0) return null;
+  if (typeof event.text !== "string" || !event.text.trim()) return null;
+  const choices = Array.isArray(event.choices)
+    ? event.choices.filter((choice): choice is string => typeof choice === "string")
+    : [];
+  const sceneStatus = event.sceneStatus === "end" ? "end" : "continue";
+  const summary =
+    typeof event.summary === "string" && event.summary.trim()
+      ? event.summary
+      : event.text;
+  const location =
+    typeof event.location === "string" && event.location.trim()
+      ? event.location
+      : activeScene?.location || "nearby";
+  const sceneGoal =
+    typeof event.sceneGoal === "string" && event.sceneGoal.trim()
+      ? event.sceneGoal
+      : summary;
+  const goalStatus =
+    event.goalStatus === "progress" ||
+    event.goalStatus === "resolved" ||
+    event.goalStatus === "abandoned"
+      ? event.goalStatus
+      : "setup";
+  const requestedTargetTurns = Number.isFinite(event.targetTurns)
+    ? event.targetTurns
+    : 3;
+
+  if (sceneStatus === "continue" && choices.length !== 3) return null;
+  if (sceneStatus === "end" && choices.length !== 0) return null;
   if (
-    event.sceneStatus === "end" &&
-    event.goalStatus !== "resolved" &&
-    event.goalStatus !== "abandoned"
+    sceneStatus === "end" &&
+    goalStatus !== "resolved" &&
+    goalStatus !== "abandoned"
   ) return null;
   if (
     (trigger === "social" || trigger === "exploration") &&
-    event.sceneStatus === "end"
+    sceneStatus === "end"
   ) return null;
   if (
     event.npc &&
@@ -877,20 +990,29 @@ function normalizeGeneratedEvent(
 
   const withNpc = attachNpcId(event, known);
   const targetTurns = clamp(
-    Math.round(event.targetTurns),
+    Math.round(requestedTargetTurns),
     pacing.targetTurns.minimum,
     pacing.targetTurns.maximum,
   );
+  // Qwen can occasionally omit this bookkeeping field despite the structured
+  // output schema. It is narrative metadata, never a reason to discard an
+  // otherwise valid scene beat.
+  const rawThreadUpdate = event.threadUpdate ?? noThreadUpdate();
+  const threadAction = ["none", "seed", "advance", "resolve"].includes(
+    rawThreadUpdate.action,
+  )
+    ? rawThreadUpdate.action
+    : "none";
   const threadUpdate = {
     id:
-      event.threadUpdate.action === "none"
+      threadAction === "none"
         ? null
-        : (event.threadUpdate.id?.slice(0, 80) ?? `thread-${story.chapterNumber}-${story.eventCount + 1}`),
-    action: event.threadUpdate.action,
+        : (rawThreadUpdate.id?.slice(0, 80) ?? `thread-${story.chapterNumber}-${story.eventCount + 1}`),
+    action: threadAction,
     summary:
-      event.threadUpdate.action === "none"
+      threadAction === "none"
         ? null
-        : (event.threadUpdate.summary?.slice(0, 300) ?? event.summary.slice(0, 300)),
+        : (rawThreadUpdate.summary?.slice(0, 300) ?? summary.slice(0, 300)),
   };
 
   return {
@@ -899,21 +1021,21 @@ function normalizeGeneratedEvent(
     location:
       trigger === "continuation" && activeScene
         ? activeScene.location
-        : event.location.slice(0, 100),
-    summary: event.summary.slice(0, 300),
+        : location.slice(0, 100),
+    summary: summary.slice(0, 300),
     sceneGoal:
       trigger === "continuation" && activeScene
         ? activeScene.sceneGoal
-        : event.sceneGoal.trim().slice(0, 240) || event.summary.slice(0, 240),
+        : sceneGoal.trim().slice(0, 240) || summary.slice(0, 240),
     goalStatus:
       trigger === "continuation" && activeScene?.goalStatus === "abandoned"
         ? "abandoned"
-        : event.goalStatus,
+        : goalStatus,
     targetTurns:
       trigger === "continuation" && activeScene
         ? activeScene.turns + 1 >= activeScene.targetTurns &&
-          event.goalStatus !== "resolved" &&
-          event.goalStatus !== "abandoned"
+          goalStatus !== "resolved" &&
+          goalStatus !== "abandoned"
           ? Math.min(5, activeScene.targetTurns + 1)
           : activeScene.targetTurns
         : targetTurns,
@@ -921,7 +1043,7 @@ function normalizeGeneratedEvent(
       trigger === "continuation" && activeScene?.npc
         ? activeScene.npc
         : withNpc.npc,
-    choices: event.choices.map((choice) => choice.slice(0, 180)),
+    choices: choices.map((choice) => choice.slice(0, 180)),
     threadUpdate,
   };
 }
@@ -1022,9 +1144,11 @@ export async function POST(request: Request) {
       { status: 502 },
     );
   }
-  const normalized = generated
+  console.error("[latent] scene payload", JSON.stringify(generated));
+  const completed = await repairSceneChoices(generated, context).catch(() => generated);
+  const normalized = completed
     ? normalizeGeneratedEvent(
-        generated,
+        completed,
         trigger,
         known,
         activeScene,
