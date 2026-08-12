@@ -26,7 +26,7 @@ function crushIsAgeAppropriate(
 }
 
 async function generateMessage(context: Record<string, unknown>) {
-  const apiKey = await getQwenApiKey();
+  const apiKey = getQwenApiKey();
   if (!apiKey) return null;
 
   const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
@@ -79,7 +79,7 @@ async function generateMessage(context: Record<string, unknown>) {
 }
 
 export async function POST(request: Request) {
-  if (!(await getQwenApiKey())) {
+  if (!getQwenApiKey()) {
     return Response.json(
       { error: "AI is not configured. Add an API key before sending messages." },
       { status: 503 },

@@ -275,7 +275,7 @@ function outcomeDraftSchema() {
 }
 
 async function generatePlan(context: Record<string, unknown>): Promise<ActionPlan | null> {
-  const apiKey = await getQwenApiKey();
+  const apiKey = getQwenApiKey();
   if (!apiKey) return null;
 
   const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
@@ -928,7 +928,7 @@ export async function POST(request: Request) {
     });
   }
 
-  if (!(await getQwenApiKey())) {
+  if (!getQwenApiKey()) {
     return Response.json(
       { error: "AI is not configured. Add an API key before resolving this action." },
       { status: 503 },

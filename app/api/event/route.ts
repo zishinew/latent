@@ -744,7 +744,7 @@ const npcSchema = {
 } as const;
 
 async function generateEvent(context: Record<string, unknown>): Promise<GeneratedEvent | null> {
-  const apiKey = await getQwenApiKey();
+  const apiKey = getQwenApiKey();
   if (!apiKey) return null;
 
   const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
@@ -927,7 +927,7 @@ function normalizeGeneratedEvent(
 }
 
 export async function POST(request: Request) {
-  if (!(await getQwenApiKey())) {
+  if (!getQwenApiKey()) {
     return Response.json(
       { error: "AI is not configured. Add an API key before starting a scene." },
       { status: 503 },
