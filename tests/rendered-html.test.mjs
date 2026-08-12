@@ -106,6 +106,25 @@ test("leaving an ordinary scene ends it immediately", async () => {
   assert.equal(result.timeCost, "moment");
 });
 
+test("moving toward an unresolved scene goal cannot end the scene", async () => {
+  const response = await postJson("/api/judge", {
+    ...baseAction,
+    intent: "Follow Milo to the chalk circle.",
+    eventContext:
+      "Milo points toward the yard. Chalk circle first. Tiny flame. Then we rescue somebody.",
+    sceneState: {
+      sceneGoal: "Complete Milo's chalk-circle Gift rescue game.",
+      goalStatus: "setup",
+      turns: 1,
+      targetTurns: 2,
+    },
+  });
+  const result = await response.json();
+
+  assert.equal(result.mode, "automatic");
+  assert.equal(result.sceneDisposition, "continue");
+});
+
 test("uncertain training uses one truthful five-tier d100 check", async () => {
   const response = await postJson("/api/judge", {
     ...baseAction,
@@ -315,7 +334,7 @@ test("exploration opens a scene instead of pretending it already happened", asyn
   assert.equal(result.sceneRequest.trigger, "exploration");
 });
 
-test("scene hard caps release the player instead of hanging", async () => {
+test("resolved scenes release the player at their pacing target", async () => {
   const response = await postJson("/api/event", {
     trigger: "continuation",
     triggerContext: "school playground",
@@ -326,6 +345,8 @@ test("scene hard caps release the player instead of hanging", async () => {
       npc: null,
       lastEvent: "The chalk game has reached a natural pause.",
       summary: "The children finished testing the chalk game.",
+      sceneGoal: "Complete the chalk game together.",
+      goalStatus: "resolved",
       beatType: "relationship",
       intensity: "low",
       targetTurns: 2,
@@ -337,6 +358,35 @@ test("scene hard caps release the player instead of hanging", async () => {
   assert.equal(result.sceneStatus, "end");
   assert.deepEqual(result.choices, []);
   assert.match(result.text, /free to continue your day|reached its natural end/i);
+});
+
+test("pacing targets advance unresolved scenes to their payoff instead of ending them", async () => {
+  const response = await postJson("/api/event", {
+    trigger: "continuation",
+    triggerContext: "school yard",
+    sceneOutcome: "You follow Milo to the chalk circle.",
+    story: { turn: 3, eventCount: 1, recentBeats: [], threads: [] },
+    activeScene: {
+      kind: "social",
+      location: "school yard",
+      npc: null,
+      lastEvent: "Milo starts drawing the chalk circle.",
+      summary: "Milo brought the player outside for a Gift rescue game.",
+      sceneGoal: "Complete Milo's chalk-circle Gift rescue game.",
+      goalStatus: "setup",
+      beatType: "school",
+      intensity: "low",
+      targetTurns: 2,
+      turns: 1,
+    },
+  });
+  const result = await response.json();
+
+  assert.equal(result.sceneStatus, "continue");
+  assert.equal(result.goalStatus, "progress");
+  assert.equal(result.sceneGoal, "Complete Milo's chalk-circle Gift rescue game.");
+  assert.equal(result.choices.length, 3);
+  assert.doesNotMatch(result.text, /goodbye|natural end/i);
 });
 
 test("new NPCs introduce themselves before their name is narrated", async () => {

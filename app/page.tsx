@@ -105,6 +105,7 @@ type BeatType =
   | "danger"
   | "aftermath";
 type BeatIntensity = "calm" | "low" | "medium" | "high";
+type SceneGoalStatus = "setup" | "progress" | "resolved" | "abandoned";
 type StoryThread = {
   id: string;
   status: "seeded" | "developing" | "urgent" | "resolved";
@@ -126,6 +127,8 @@ type WorldEvent = {
   intensity: BeatIntensity;
   location: string;
   summary: string;
+  sceneGoal: string;
+  goalStatus: SceneGoalStatus;
   targetTurns: number;
   choices: string[];
   npc: NpcProfile | null;
@@ -143,6 +146,8 @@ type ActiveScene = {
   npc: NpcProfile | null;
   lastEvent: string;
   summary: string;
+  sceneGoal: string;
+  goalStatus: SceneGoalStatus;
   beatType: BeatType;
   intensity: BeatIntensity;
   targetTurns: number;
@@ -976,6 +981,8 @@ export default function Home() {
                 npc: activeScene.npc,
                 lastEvent: activeScene.lastEvent,
                 summary: activeScene.summary,
+                sceneGoal: activeScene.sceneGoal,
+                goalStatus: activeScene.goalStatus,
                 beatType: activeScene.beatType,
                 intensity: activeScene.intensity,
                 targetTurns: activeScene.targetTurns,
@@ -1082,9 +1089,13 @@ export default function Home() {
         npc: nextEvent.npc ?? current?.npc ?? null,
         lastEvent: nextEvent.text,
         summary: nextEvent.summary,
+        sceneGoal: current?.sceneGoal ?? nextEvent.sceneGoal,
+        goalStatus: nextEvent.goalStatus,
         beatType: nextEvent.beatType,
         intensity: nextEvent.intensity,
-        targetTurns: current?.targetTurns ?? nextEvent.targetTurns,
+        targetTurns: current
+          ? Math.max(current.targetTurns, nextEvent.targetTurns)
+          : nextEvent.targetTurns,
         turns: current ? current.turns + 1 : 0,
       }));
     } catch {
@@ -1164,6 +1175,14 @@ export default function Home() {
                   intensity: worldEvent.intensity,
                 }
               : null,
+          sceneState: sceneAtStart
+            ? {
+                sceneGoal: sceneAtStart.sceneGoal,
+                goalStatus: sceneAtStart.goalStatus,
+                turns: sceneAtStart.turns,
+                targetTurns: sceneAtStart.targetTurns,
+              }
+            : null,
           npcContext: eventNpc,
           recentContext: eventContext ? chatMessages.slice(-8) : [],
         }),

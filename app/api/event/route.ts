@@ -21,6 +21,7 @@ type BeatType =
   | "aftermath";
 type BeatIntensity = "calm" | "low" | "medium" | "high";
 type Tone = "opportunity" | "complication" | "danger" | "wonder";
+type SceneGoalStatus = "setup" | "progress" | "resolved" | "abandoned";
 type KnownCharacter = NpcProfile & {
   relationshipLevel?: number;
   memories?: string[];
@@ -38,6 +39,8 @@ type WorldEvent = {
   intensity: BeatIntensity;
   location: string;
   summary: string;
+  sceneGoal: string;
+  goalStatus: SceneGoalStatus;
   targetTurns: number;
   choices: string[];
   npc: NpcProfile | null;
@@ -53,6 +56,8 @@ type ActiveSceneContext = {
   npc: KnownCharacter | null;
   lastEvent: string;
   summary: string;
+  sceneGoal: string;
+  goalStatus: SceneGoalStatus;
   beatType: BeatType;
   intensity: BeatIntensity;
   targetTurns: number;
@@ -339,6 +344,19 @@ function parseActiveScene(value: unknown, fallbackLocation: string): ActiveScene
       typeof item.lastEvent === "string" ? item.lastEvent.slice(0, 800) : "",
     summary:
       typeof item.summary === "string" ? item.summary.slice(0, 300) : "",
+    sceneGoal:
+      typeof item.sceneGoal === "string" && item.sceneGoal.trim()
+        ? item.sceneGoal.trim().slice(0, 240)
+        : typeof item.summary === "string" && item.summary.trim()
+          ? item.summary.trim().slice(0, 240)
+          : "Let the current scene reach its central payoff.",
+    goalStatus:
+      item.goalStatus === "setup" ||
+      item.goalStatus === "progress" ||
+      item.goalStatus === "resolved" ||
+      item.goalStatus === "abandoned"
+        ? item.goalStatus
+        : "progress",
     beatType: beatTypes.includes(item.beatType as BeatType)
       ? (item.beatType as BeatType)
       : "slice_of_life",
@@ -512,6 +530,30 @@ function closingFallback(activeScene: ActiveSceneContext): WorldEvent {
     intensity: "calm",
     location: activeScene.location,
     summary: `The scene at ${activeScene.location} ended naturally.`,
+    sceneGoal: activeScene.sceneGoal,
+    goalStatus:
+      activeScene.goalStatus === "abandoned" ? "abandoned" : "resolved",
+    targetTurns: activeScene.targetTurns,
+    choices: [],
+    npc: activeScene.npc,
+    sceneStatus: "end",
+    threadUpdate: noThreadUpdate(),
+  };
+}
+
+function payoffFallback(activeScene: ActiveSceneContext): WorldEvent {
+  const name = activeScene.npc ? firstName(activeScene.npc.name) : null;
+  return {
+    text: name
+      ? `${name} follows the plan through to its decisive final step instead of abandoning it midway. Only after the promised activity is truly complete does the moment settle.`
+      : `The central task at ${activeScene.location} reaches its decisive final step instead of being cut short. Only after it is truly resolved does the moment settle.`,
+    tone: "opportunity",
+    beatType: activeScene.beatType,
+    intensity: "calm",
+    location: activeScene.location,
+    summary: `${activeScene.sceneGoal} The scene then ended naturally.`,
+    sceneGoal: activeScene.sceneGoal,
+    goalStatus: "resolved",
     targetTurns: activeScene.targetTurns,
     choices: [],
     npc: activeScene.npc,
@@ -529,20 +571,36 @@ function contextualFallback(
   story: StoryContext,
 ): WorldEvent {
   if (trigger === "continuation" && activeScene) {
-    if (activeScene.turns + 1 >= activeScene.targetTurns) {
+    if (
+      activeScene.turns + 1 >= activeScene.targetTurns &&
+      (activeScene.goalStatus === "resolved" ||
+        activeScene.goalStatus === "abandoned")
+    ) {
       return closingFallback(activeScene);
     }
+    if (activeScene.turns + 1 >= 5) {
+      return payoffFallback(activeScene);
+    }
     const name = activeScene.npc ? firstName(activeScene.npc.name) : null;
+    const payoffDue = activeScene.turns + 1 >= activeScene.targetTurns;
     return {
       text: name
-        ? `${name} pauses, then points out one detail neither of you has settled yet. Their attention stays on the immediate situation rather than drifting to something new.`
-        : `One concrete detail at ${activeScene.location} remains unresolved, keeping the moment from ending just yet.`,
+        ? payoffDue
+          ? `${name} finishes the setup and turns back to you with everything ready. “Okay. This is the part we came for.” Their attention stays on the activity they promised instead of drifting to something new.`
+          : `${name} pauses, then points out one detail neither of you has settled yet. Their attention stays on the immediate situation rather than drifting to something new.`
+        : payoffDue
+          ? `The setup at ${activeScene.location} is complete, bringing the scene's central task to its decisive moment instead of cutting it short.`
+          : `One concrete detail at ${activeScene.location} remains unresolved, keeping the moment from ending just yet.`,
       tone: activeScene.intensity === "high" ? "danger" : "complication",
       beatType: activeScene.beatType,
       intensity: activeScene.intensity,
       location: activeScene.location,
       summary: activeScene.summary || `The scene at ${activeScene.location} continues.`,
-      targetTurns: activeScene.targetTurns,
+      sceneGoal: activeScene.sceneGoal,
+      goalStatus: "progress",
+      targetTurns: payoffDue
+        ? Math.min(5, activeScene.targetTurns + 1)
+        : activeScene.targetTurns,
       choices: name
         ? [
             `Ask ${name} directly about the remaining problem`,
@@ -576,6 +634,8 @@ function contextualFallback(
       intensity: "low",
       location: area,
       summary: `${givenName} invited the player into a confused chalk game at ${area}.`,
+      sceneGoal: `Join ${givenName}'s chalk game and see the shared activity through.`,
+      goalStatus: "setup",
       targetTurns: 2,
       choices: [
         "Ask them to explain the game from the beginning",
@@ -596,6 +656,8 @@ function contextualFallback(
       intensity: "medium",
       location: area,
       summary: `A freshly marked inspection trail at ${area} hinted at an unresolved disturbance.`,
+      sceneGoal: "Investigate the inspection trail without crossing the safety boundary.",
+      goalStatus: "setup",
       targetTurns: 3,
       choices: [
         "Read the warning flags without crossing them",
@@ -620,6 +682,8 @@ function contextualFallback(
       intensity: "low",
       location: "shopping street",
       summary: "A brief unexplained warning signal made nearby adults watch the eastern skyline.",
+      sceneGoal: "Decide how to respond to the unexplained warning signal.",
+      goalStatus: "setup",
       targetTurns: 1,
       choices: [
         "Ask a nearby adult what the warning tone meant",
@@ -644,6 +708,8 @@ function contextualFallback(
       intensity: "high",
       location: "neighborhood street",
       summary: "A small Anomaly boundary formed while a loose cart rolled toward it during evacuation.",
+      sceneGoal: "Respond safely to the loose cart during the Anomaly evacuation.",
+      goalStatus: "setup",
       targetTurns: 4,
       choices: [
         "Warn the hero about the rolling cart",
@@ -668,6 +734,8 @@ function contextualFallback(
       intensity: "calm",
       location: "neighborhood street",
       summary: "The neighborhood returned to routine, though one mark from the disturbance remained.",
+      sceneGoal: "Witness how the neighborhood is recovering from the disturbance.",
+      goalStatus: "resolved",
       targetTurns: 1,
       choices: [],
       npc: null,
@@ -683,6 +751,8 @@ function contextualFallback(
     intensity: "calm",
     location: "home",
     summary: "A hero-center safety workshop was announced during an otherwise ordinary morning.",
+    sceneGoal: "Decide what to do about the workshop and unfinished schoolwork.",
+    goalStatus: "setup",
     targetTurns: 1,
     choices: [
       "Ask your family about the safety workshop",
@@ -765,6 +835,11 @@ async function generateEvent(context: Record<string, unknown>): Promise<Generate
               intensity: { type: "string", enum: intensities },
               location: { type: "string" },
               summary: { type: "string" },
+              sceneGoal: { type: "string" },
+              goalStatus: {
+                type: "string",
+                enum: ["setup", "progress", "resolved", "abandoned"],
+              },
               targetTurns: { type: "number" },
               choices: {
                 type: "array",
@@ -795,6 +870,8 @@ async function generateEvent(context: Record<string, unknown>): Promise<Generate
               "intensity",
               "location",
               "summary",
+              "sceneGoal",
+              "goalStatus",
               "targetTurns",
               "choices",
               "npc",
@@ -826,6 +903,11 @@ function normalizeGeneratedEvent(
 ): WorldEvent | null {
   if (event.sceneStatus === "continue" && event.choices.length !== 3) return null;
   if (event.sceneStatus === "end" && event.choices.length !== 0) return null;
+  if (
+    event.sceneStatus === "end" &&
+    event.goalStatus !== "resolved" &&
+    event.goalStatus !== "abandoned"
+  ) return null;
   if (
     (trigger === "social" || trigger === "exploration") &&
     event.sceneStatus === "end"
@@ -874,9 +956,21 @@ function normalizeGeneratedEvent(
         ? activeScene.location
         : event.location.slice(0, 100),
     summary: event.summary.slice(0, 300),
+    sceneGoal:
+      trigger === "continuation" && activeScene
+        ? activeScene.sceneGoal
+        : event.sceneGoal.trim().slice(0, 240) || event.summary.slice(0, 240),
+    goalStatus:
+      trigger === "continuation" && activeScene?.goalStatus === "abandoned"
+        ? "abandoned"
+        : event.goalStatus,
     targetTurns:
       trigger === "continuation" && activeScene
-        ? activeScene.targetTurns
+        ? activeScene.turns + 1 >= activeScene.targetTurns &&
+          event.goalStatus !== "resolved" &&
+          event.goalStatus !== "abandoned"
+          ? Math.min(5, activeScene.targetTurns + 1)
+          : activeScene.targetTurns
         : targetTurns,
     npc:
       trigger === "continuation" && activeScene?.npc
@@ -909,14 +1003,6 @@ export async function POST(request: Request) {
     : [];
   const pacing = pacingDirective(trigger, story, activeScene);
 
-  if (
-    trigger === "continuation" &&
-    activeScene &&
-    activeScene.turns + 1 >= activeScene.targetTurns
-  ) {
-    return Response.json(closingFallback(activeScene));
-  }
-
   const context = {
     player: {
       name: typeof body.playerName === "string" ? body.playerName.slice(0, 100) : "the player",
@@ -947,6 +1033,20 @@ export async function POST(request: Request) {
     trigger,
     requestedArea: area || null,
     activeScene,
+    scenePacing:
+      trigger === "continuation" && activeScene
+        ? {
+            targetReached: activeScene.turns + 1 >= activeScene.targetTurns,
+            hardCapReached: activeScene.turns + 1 >= 5,
+            instruction:
+              activeScene.goalStatus === "resolved" ||
+              activeScene.goalStatus === "abandoned"
+                ? "Close cleanly if the scene has no remaining consequence to show."
+                : activeScene.turns + 1 >= activeScene.targetTurns
+                  ? "Bring the central scene goal to its decisive payoff now. Do not end through departure, interruption, or summary before that payoff occurs."
+                  : "Advance the central scene goal with one concrete beat.",
+          }
+        : null,
     latestResolvedOutcome:
       typeof body.sceneOutcome === "string"
         ? body.sceneOutcome.slice(0, 800)

@@ -961,6 +961,15 @@ export async function POST(request: Request) {
     body.eventMeta && typeof body.eventMeta === "object"
       ? (body.eventMeta as Record<string, unknown>)
       : null;
+  const sceneState =
+    body.sceneState && typeof body.sceneState === "object"
+      ? (body.sceneState as Record<string, unknown>)
+      : null;
+  const sceneGoalStatus = sceneState?.goalStatus;
+  const unresolvedSceneGoal =
+    Boolean(eventContext && sceneState) &&
+    sceneGoalStatus !== "resolved" &&
+    sceneGoalStatus !== "abandoned";
   const eventIntensity: BeatIntensity =
     eventMeta && ["calm", "low", "medium", "high"].includes(String(eventMeta.intensity))
       ? (eventMeta.intensity as BeatIntensity)
@@ -1025,6 +1034,18 @@ export async function POST(request: Request) {
     activeScene: eventContext
       ? {
           currentBeat: eventContext,
+          sceneGoal:
+            typeof sceneState?.sceneGoal === "string"
+              ? sceneState.sceneGoal.slice(0, 240)
+              : null,
+          goalStatus:
+            typeof sceneGoalStatus === "string" ? sceneGoalStatus : null,
+          turns:
+            typeof sceneState?.turns === "number" ? sceneState.turns : null,
+          targetTurns:
+            typeof sceneState?.targetTurns === "number"
+              ? sceneState.targetTurns
+              : null,
           npc: npcContext,
           npcIsIntroduced: introduced,
           recentContext,
@@ -1092,7 +1113,10 @@ export async function POST(request: Request) {
       : "The outcome is based on the relevant skill, difficulty, risk, and established circumstances.",
     timeCost: plan.resolutionMode === "blocked" ? "moment" : plan.timeCost,
     sceneDisposition:
-      plan.resolutionMode === "blocked" ? "continue" : selected.sceneDisposition,
+      plan.resolutionMode === "blocked" ||
+      (unresolvedSceneGoal && !closesScene(intent))
+        ? "continue"
+        : selected.sceneDisposition,
     sceneRequest:
       plan.resolutionMode === "scene" && plan.sceneTrigger !== "none"
         ? {
