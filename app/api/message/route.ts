@@ -1,5 +1,6 @@
 import type { NpcProfile } from "../../characters";
 import { phoneCharacterPrompt } from "../../game-prompts";
+import { getQwenApiKey } from "../../qwen";
 
 type MessageIntent = "hangout" | "favor" | "challenge" | "casual" | "crush";
 type MessageResult = { text: string; intent: MessageIntent };
@@ -25,7 +26,7 @@ function crushIsAgeAppropriate(
 }
 
 async function generateMessage(context: Record<string, unknown>) {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
+  const apiKey = await getQwenApiKey();
   if (!apiKey) return null;
 
   const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
@@ -78,7 +79,7 @@ async function generateMessage(context: Record<string, unknown>) {
 }
 
 export async function POST(request: Request) {
-  if (!process.env.DASHSCOPE_API_KEY) {
+  if (!(await getQwenApiKey())) {
     return Response.json(
       { error: "AI is not configured. Add an API key before sending messages." },
       { status: 503 },

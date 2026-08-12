@@ -9,6 +9,7 @@ const workerPromise = import(workerUrl.href).then(({ default: worker }) => worke
 
 const workerEnvironment = {
   ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+  DASHSCOPE_API_KEY: "",
 };
 const executionContext = { waitUntil() {}, passThroughOnException() {} };
 

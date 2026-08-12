@@ -1,4 +1,5 @@
 import { actionRefereePrompt } from "../../game-prompts";
+import { getQwenApiKey } from "../../qwen";
 
 const attributeNames = [
   "Strength",
@@ -274,7 +275,7 @@ function outcomeDraftSchema() {
 }
 
 async function generatePlan(context: Record<string, unknown>): Promise<ActionPlan | null> {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
+  const apiKey = await getQwenApiKey();
   if (!apiKey) return null;
 
   const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
@@ -927,7 +928,7 @@ export async function POST(request: Request) {
     });
   }
 
-  if (!process.env.DASHSCOPE_API_KEY) {
+  if (!(await getQwenApiKey())) {
     return Response.json(
       { error: "AI is not configured. Add an API key before resolving this action." },
       { status: 503 },

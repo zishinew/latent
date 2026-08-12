@@ -8,6 +8,7 @@ import {
   type SocialDifficulty,
 } from "../../characters";
 import { sceneDirectorPrompt } from "../../game-prompts";
+import { getQwenApiKey } from "../../qwen";
 
 type EventTrigger = "ambient" | "exploration" | "social" | "continuation";
 type BeatType =
@@ -743,7 +744,7 @@ const npcSchema = {
 } as const;
 
 async function generateEvent(context: Record<string, unknown>): Promise<GeneratedEvent | null> {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
+  const apiKey = await getQwenApiKey();
   if (!apiKey) return null;
 
   const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
@@ -926,7 +927,7 @@ function normalizeGeneratedEvent(
 }
 
 export async function POST(request: Request) {
-  if (!process.env.DASHSCOPE_API_KEY) {
+  if (!(await getQwenApiKey())) {
     return Response.json(
       { error: "AI is not configured. Add an API key before starting a scene." },
       { status: 503 },
