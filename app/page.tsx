@@ -379,7 +379,7 @@ export default function Home() {
   const [lastName, setLastName] = useState("");
   const [characterIdentityLoaded, setCharacterIdentityLoaded] = useState(false);
   const lastNameInputRef = useRef<HTMLInputElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLElement>(null);
   const eventRequestTokenRef = useRef(0);
   const eventControllerRef = useRef<AbortController | null>(null);
   const actionRequestTokenRef = useRef(0);
@@ -623,16 +623,31 @@ export default function Home() {
     ).matches
       ? "auto"
       : "smooth";
-    const scrollToLatest = () =>
-      chatEndRef.current?.scrollIntoView({ behavior, block: "end" });
-    const animationFrame = window.requestAnimationFrame(scrollToLatest);
-    const settleTimer = window.setTimeout(scrollToLatest, 220);
+    const scrollToLatest = (scrollBehavior: ScrollBehavior) => {
+      const transcript = chatScrollRef.current;
+      if (!transcript) return;
+      transcript.scrollTo({
+        top: transcript.scrollHeight,
+        behavior: scrollBehavior,
+      });
+    };
+    const animationFrame = window.requestAnimationFrame(() =>
+      scrollToLatest(behavior),
+    );
+    const settleTimer = window.setTimeout(() => scrollToLatest("auto"), 520);
 
     return () => {
       window.cancelAnimationFrame(animationFrame);
       window.clearTimeout(settleTimer);
     };
-  }, [phase, chatMessages, isJudgingAction]);
+  }, [
+    phase,
+    chatMessages,
+    isJudgingAction,
+    worldEvent,
+    activeScene,
+    activityMenu,
+  ]);
 
   useEffect(() => {
     if (
@@ -1934,44 +1949,45 @@ export default function Home() {
             </div>
           </div>
         </header>
-        <section className="gameplay-chat" aria-live="polite">
-          <div className="chat-message chat-message--world">
-            <span>world</span>
-            <p>You are eight years old.</p>
-          </div>
-          <div className="chat-message chat-message--world">
-            <span>world</span>
-            <p>
-              Morning light reaches across your bedroom floor. Outside, children
-              practice their Gifts between apartment towers while a licensed hero
-              patrols overhead. The academy entrance exams are still years away.
-              Today is yours to shape.
-            </p>
-          </div>
-          {chatMessages.map((message) => (
-            <div
-              className={`chat-message chat-message--${message.role}`}
-              key={message.id}
-            >
-              <span>
-                {message.role === "player"
-                  ? "you"
-                  : message.role === "event"
-                    ? "event"
-                    : message.role === "thought"
-                      ? "surface thought"
-                    : "world"}
-              </span>
-              <p>{formatInlineText(message.text)}</p>
-            </div>
-          ))}
-          {isJudgingAction && (
-            <div className="chat-message chat-message--world chat-message--judging">
+        <section className="gameplay-chat" ref={chatScrollRef} aria-live="polite">
+          <div className="chat-transcript">
+            <div className="chat-message chat-message--world">
               <span>world</span>
-              <p>reading the moment...</p>
+              <p>You are eight years old.</p>
             </div>
-          )}
-          <div className="chat-scroll-anchor" ref={chatEndRef} aria-hidden="true" />
+            <div className="chat-message chat-message--world">
+              <span>world</span>
+              <p>
+                Morning light reaches across your bedroom floor. Outside, children
+                practice their Gifts between apartment towers while a licensed hero
+                patrols overhead. The academy entrance exams are still years away.
+                Today is yours to shape.
+              </p>
+            </div>
+            {chatMessages.map((message) => (
+              <div
+                className={`chat-message chat-message--${message.role}`}
+                key={message.id}
+              >
+                <span>
+                  {message.role === "player"
+                    ? "you"
+                    : message.role === "event"
+                      ? "event"
+                      : message.role === "thought"
+                        ? "surface thought"
+                      : "world"}
+                </span>
+                <p>{formatInlineText(message.text)}</p>
+              </div>
+            ))}
+            {isJudgingAction && (
+              <div className="chat-message chat-message--world chat-message--judging">
+                <span>world</span>
+                <p>reading the moment...</p>
+              </div>
+            )}
+          </div>
         </section>
         <aside className={`action-dock ${activeScene ? "action-dock--scene" : ""}`} aria-label="Suggested actions">
           <span>

@@ -227,15 +227,19 @@ body {
 }
 
 .gameplay-screen {
-  min-height: 100vh;
-  padding: 0 2rem 10rem;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  padding: 0 2rem;
+  overflow: hidden;
   background: #f7f7f5;
   color: #161616;
 }
 
 .gameplay-header {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 3;
   display: flex;
   align-items: baseline;
@@ -295,10 +299,21 @@ body {
 }
 
 .gameplay-chat {
-  display: grid;
+  min-height: 0;
   width: min(46rem, 100%);
   margin: 0 auto;
-  padding: 5rem 0 2rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.chat-transcript {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 100%;
+  padding-top: 5rem;
   gap: 2.2rem;
 }
 
@@ -367,25 +382,14 @@ body {
   animation: judging-pulse 1.4s ease-in-out infinite;
 }
 
-.chat-scroll-anchor {
-  height: clamp(11rem, 23vh, 14rem);
-  pointer-events: none;
-}
-
 .action-dock {
-  position: fixed;
-  right: 0;
-  bottom: 1.25rem;
-  left: 0;
+  position: relative;
   z-index: 4;
   width: min(46rem, calc(100vw - 4rem));
   margin: 0 auto;
-  padding: 1.1rem 0 0.5rem;
-  background: linear-gradient(to bottom, transparent, #f7f7f5 20%);
-}
-
-.action-dock--scene {
-  bottom: 1.25rem;
+  border-top: 1px solid #d8d8d3;
+  padding: 1rem 0 1.25rem;
+  background: #f7f7f5;
 }
 
 .action-dock > span {
@@ -1936,7 +1940,7 @@ body {
   }
 
   .gameplay-screen {
-    padding: 0 1rem 11rem;
+    padding: 0 1rem;
   }
 
   .gameplay-header {
@@ -1964,6 +1968,10 @@ body {
   }
 
   .gameplay-chat {
+    width: 100%;
+  }
+
+  .chat-transcript {
     padding-top: 3rem;
   }
 
@@ -1972,12 +1980,8 @@ body {
   }
 
   .action-dock {
-    bottom: 0.75rem;
     width: calc(100vw - 2rem);
-  }
-
-  .action-dock--scene {
-    bottom: 0.75rem;
+    padding-bottom: 0.75rem;
   }
 
   .action-dock > div {
