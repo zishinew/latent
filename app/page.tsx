@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   canPerceiveThoughts,
   relationshipContactThreshold,
@@ -253,6 +259,71 @@ function formatInlineText(text: string) {
 
       return part;
     });
+}
+
+function AnimatedInlineText({ text }: { text: string }) {
+  const parts = text
+    .split(/(\*\*[^*\n]+?\*\*|\*[^*\n]+?\*)/g)
+    .filter(Boolean);
+  const wordCount = parts.reduce((total, part) => {
+    const content = part.startsWith("**")
+      ? part.slice(2, -2)
+      : part.startsWith("*")
+        ? part.slice(1, -1)
+        : part;
+    return total + content.trim().split(/\s+/).filter(Boolean).length;
+  }, 0);
+  const stagger = Math.max(10, Math.min(28, 900 / Math.max(1, wordCount)));
+  let wordIndex = 0;
+
+  return parts.map((part, partIndex) => {
+    const isStrong = part.startsWith("**") && part.endsWith("**");
+    const isEmphasis = !isStrong && part.startsWith("*") && part.endsWith("*");
+    const content = isStrong
+      ? part.slice(2, -2)
+      : isEmphasis
+        ? part.slice(1, -1)
+        : part;
+    const words = content.split(/(\s+)/).map((token, tokenIndex) => {
+      if (!token || /^\s+$/.test(token)) return token;
+      const delay = wordIndex * stagger;
+      wordIndex += 1;
+      return (
+        <span
+          className="animated-word"
+          key={`${partIndex}-${tokenIndex}-${token}`}
+          style={{ "--word-delay": `${delay}ms` } as CSSProperties}
+        >
+          {token}
+        </span>
+      );
+    });
+
+    if (isStrong) return <strong key={`strong-${partIndex}`}>{words}</strong>;
+    if (isEmphasis) return <em key={`em-${partIndex}`}>{words}</em>;
+    return (
+      <span className="animated-text-part" key={`text-${partIndex}`}>
+        {words}
+      </span>
+    );
+  });
+}
+
+function ChatSkeleton() {
+  return (
+    <div
+      className="chat-message chat-message--world chat-message--loading"
+      role="status"
+      aria-label="The world is responding"
+    >
+      <span>world</span>
+      <div className="chat-skeleton" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </div>
+    </div>
+  );
 }
 
 function clampRelationship(value: number) {
@@ -644,6 +715,7 @@ export default function Home() {
     phase,
     chatMessages,
     isJudgingAction,
+    isGeneratingEvent,
     worldEvent,
     activeScene,
     activityMenu,
@@ -1978,21 +2050,22 @@ export default function Home() {
                         ? "surface thought"
                       : "world"}
                 </span>
-                <p>{formatInlineText(message.text)}</p>
+                <p>
+                  {message.role === "player" ? (
+                    formatInlineText(message.text)
+                  ) : (
+                    <AnimatedInlineText text={message.text} />
+                  )}
+                </p>
               </div>
             ))}
-            {isJudgingAction && (
-              <div className="chat-message chat-message--world chat-message--judging">
-                <span>world</span>
-                <p>reading the moment...</p>
-              </div>
-            )}
+            {(isJudgingAction || isGeneratingEvent) && <ChatSkeleton />}
           </div>
         </section>
         <aside className={`action-dock ${activeScene ? "action-dock--scene" : ""}`} aria-label="Suggested actions">
           <span>
-            {activeScene && isGeneratingEvent
-              ? "the moment is settling"
+            {isJudgingAction || isGeneratingEvent
+              ? "the world is responding"
               : worldEvent
               ? "the moment demands an answer"
               : activeScene
@@ -2052,14 +2125,12 @@ export default function Home() {
             )}
           </div>
           <p>
-            {worldEvent
+            {isJudgingAction || isGeneratingEvent
+              ? "writing the next moment..."
+              : worldEvent
               ? "your response may change more than this moment."
-              : activeScene && isGeneratingEvent
-                ? "waiting for the moment to answer..."
-                : activeScene
+              : activeScene
                   ? "finish this interaction or leave before beginning something else."
-              : isGeneratingEvent
-                ? "something is beginning to move..."
                 : "ordinary choices resolve directly. uncertain attempts are tested."}
           </p>
           <form className="chat-composer" onSubmit={submitCustomAction}>

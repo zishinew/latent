@@ -324,7 +324,7 @@ body {
   animation: chat-message-arrive 450ms var(--ease-out) both;
 }
 
-.chat-message span {
+.chat-message > span {
   color: #92928c;
   font-size: 0.68rem;
   letter-spacing: 0.09em;
@@ -353,7 +353,7 @@ body {
   padding: 0.25rem 0 0.25rem 1rem;
 }
 
-.chat-message--event span {
+.chat-message--event > span {
   color: #5e5e59;
 }
 
@@ -367,7 +367,7 @@ body {
   padding-left: 1rem;
 }
 
-.chat-message--thought span {
+.chat-message--thought > span {
   color: #777772;
 }
 
@@ -380,6 +380,51 @@ body {
   color: #85857f;
   font-style: italic;
   animation: judging-pulse 1.4s ease-in-out infinite;
+}
+
+.animated-text-part {
+  display: inline;
+}
+
+.animated-word {
+  display: inline-block;
+  opacity: 0;
+  filter: blur(1px);
+  animation: word-reveal 360ms var(--ease-out) var(--word-delay) forwards;
+  will-change: opacity, transform, filter;
+}
+
+.chat-message--loading {
+  width: min(32rem, 88%);
+  animation-duration: 240ms;
+}
+
+.chat-skeleton {
+  display: grid;
+  width: 100%;
+  gap: 0.55rem;
+}
+
+.chat-skeleton i {
+  display: block;
+  width: 100%;
+  height: 0.68rem;
+  background: linear-gradient(
+    90deg,
+    #dfdfda 0%,
+    #cacac4 42%,
+    #dfdfda 78%
+  );
+  background-size: 240% 100%;
+  animation: skeleton-sweep 1.25s ease-in-out infinite;
+}
+
+.chat-skeleton i:nth-child(2) {
+  width: 84%;
+}
+
+.chat-skeleton i:nth-child(3) {
+  width: 58%;
 }
 
 .action-dock {
@@ -1832,6 +1877,25 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes word-reveal {
+  from {
+    opacity: 0;
+    filter: blur(1px);
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+@keyframes skeleton-sweep {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}
+
 @keyframes judging-pulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
@@ -2126,5 +2190,17 @@ body {
   .custom-gift-form {
     animation-duration: 1ms;
     animation-delay: 0ms;
+  }
+
+  .animated-word {
+    opacity: 1;
+    filter: none;
+    transform: none;
+    animation: none;
+  }
+
+  .chat-skeleton i {
+    background: #d6d6d0;
+    animation: none;
   }
 }
