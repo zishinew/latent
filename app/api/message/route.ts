@@ -24,70 +24,6 @@ function crushIsAgeAppropriate(
   return (bothChildren && Math.abs(protagonistAge - npcAge) <= 2) || bothAdults;
 }
 
-function localMessage(
-  npc: NpcProfile,
-  level: number,
-  protagonistAge: number,
-  replyTo: string,
-): MessageResult {
-  const canCrush = crushIsAgeAppropriate(
-    protagonistAge,
-    npc.age,
-    level,
-    npc.crushStyle,
-  );
-  if (replyTo) {
-    if (level < 0 || npc.archetype === "rival") {
-      return { text: "Big talk. Prove it when I see you.", intent: "challenge" };
-    }
-    if (npc.archetype === "tsundere") {
-      return {
-        text: "Fine. I can make time. Not because I was waiting or anything.",
-        intent: canCrush ? "crush" : "casual",
-      };
-    }
-    if (npc.archetype === "dandere") {
-      return { text: "okay :) i'm glad you messaged first", intent: canCrush ? "crush" : "casual" };
-    }
-    return { text: "Okay! Tell me when you're free.", intent: "casual" };
-  }
-
-  if (level < -15 || npc.archetype === "rival") {
-    return {
-      text: "Park. After school. I want a rematch—and don't be late.",
-      intent: "challenge",
-    };
-  }
-  if (level < 25) {
-    return {
-      text: `Hey. Can you help me with ${npc.privateGoal.toLocaleLowerCase()}? I might owe you one.`,
-      intent: "favor",
-    };
-  }
-  if (canCrush) {
-    if (npc.crushStyle === "shy") {
-      return {
-        text: "are you busy later? it's okay if you are. i just thought maybe we could hang out. just us.",
-        intent: "crush",
-      };
-    }
-    if (npc.crushStyle === "teasing" || npc.crushStyle === "guarded") {
-      return {
-        text: "You'd better come hang out later. It would be boring without someone worth teasing.",
-        intent: "crush",
-      };
-    }
-    return {
-      text: `I saved you one of my ${npc.likes[1] ?? "favorite snacks"}. Want to meet after school?`,
-      intent: "crush",
-    };
-  }
-  if (npc.archetype === "tsundere") {
-    return { text: "Training after school? Don't make me practice alone.", intent: "hangout" };
-  }
-  return { text: `Want to hang out and do something with ${npc.likes[0] ?? "our Gifts"}?`, intent: "hangout" };
-}
-
 async function generateMessage(context: Record<string, unknown>) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
@@ -142,6 +78,13 @@ async function generateMessage(context: Record<string, unknown>) {
 }
 
 export async function POST(request: Request) {
+  if (!process.env.OPENAI_API_KEY) {
+    return Response.json(
+      { error: "AI is not configured. Add an API key before sending messages." },
+      { status: 503 },
+    );
+  }
+
   const body = (await request.json()) as Record<string, unknown>;
   const npc = body.npc as NpcProfile | undefined;
   if (!npc || typeof npc.name !== "string") {
@@ -167,23 +110,29 @@ export async function POST(request: Request) {
     level,
     npc.crushStyle,
   );
-  const result =
-    (await generateMessage({
-      npc,
-      protagonistAge,
-      relationshipLevel: level,
-      romanceAllowed: canCrush,
-      memories,
-      replyTo: replyTo || null,
-      recentMessages,
-    }).catch(() => null)) ?? localMessage(npc, level, protagonistAge, replyTo);
+  const result = await generateMessage({
+    npc,
+    protagonistAge,
+    relationshipLevel: level,
+    romanceAllowed: canCrush,
+    memories,
+    replyTo: replyTo || null,
+    recentMessages,
+  }).catch(() => null);
 
-  return Response.json(
-    result.intent === "crush" && !canCrush
-      ? {
-          ...localMessage(npc, Math.min(level, 24), protagonistAge, replyTo),
-          intent: "casual",
-        }
-      : result,
-  );
+  if (!result) {
+    return Response.json(
+      { error: "AI is unavailable right now. Please try again." },
+      { status: 502 },
+    );
+  }
+
+  if (result.intent === "crush" && !canCrush) {
+    return Response.json(
+      { error: "AI returned an invalid message. Please try again." },
+      { status: 502 },
+    );
+  }
+
+  return Response.json(result);
 }

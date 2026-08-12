@@ -120,69 +120,6 @@ const beatTypes: BeatType[] = [
 ];
 const intensities: BeatIntensity[] = ["calm", "low", "medium", "high"];
 
-const fallbackChildren: NpcProfile[] = [
-  {
-    id: "mina-park",
-    name: "Mina Park",
-    age: 8,
-    archetype: "tsundere",
-    traits: ["competitive", "observant", "secretly considerate"],
-    values: ["effort", "keeping promises"],
-    likes: ["balance drills", "melon soda"],
-    dislikes: ["pity", "show-offs"],
-    socialDifficulty: "hard",
-    voice: "Blunt and quick to challenge; hides compliments inside criticism.",
-    privateGoal: "Prove she can become a rescue hero without anyone's help.",
-    insecurity: "She worries needing help means she is weak.",
-    crushStyle: "guarded",
-  },
-  {
-    id: "tomo-alvarez",
-    name: "Tomo Alvarez",
-    age: 9,
-    archetype: "deredere",
-    traits: ["warm", "curious", "easily distracted"],
-    values: ["inclusion", "honesty"],
-    likes: ["hero trivia", "paper airplanes"],
-    dislikes: ["bullying", "long silences"],
-    socialDifficulty: "easy",
-    voice: "Talks quickly, asks sincere questions, and shares small secrets freely.",
-    privateGoal: "Build a neighborhood junior hero club.",
-    insecurity: "He fears friends only tolerate his nonstop talking.",
-    crushStyle: "open",
-  },
-  {
-    id: "eri-nakamura",
-    name: "Eri Nakamura",
-    age: 8,
-    archetype: "dandere",
-    traits: ["quiet", "imaginative", "careful"],
-    values: ["kindness", "privacy"],
-    likes: ["drawing Anomalies", "quiet rooftops"],
-    dislikes: ["being rushed", "public arguments"],
-    socialDifficulty: "standard",
-    voice: "Speaks softly in short sentences, but becomes vivid around trusted people.",
-    privateGoal: "Fill a secret field guide with every harmless Anomaly she can find.",
-    insecurity: "She assumes louder people will speak over her.",
-    crushStyle: "shy",
-  },
-  {
-    id: "noah-bell",
-    name: "Noah Bell",
-    age: 8,
-    archetype: "trickster",
-    traits: ["playful", "clever", "unreliable"],
-    values: ["freedom", "loyalty"],
-    likes: ["harmless pranks", "urban legends"],
-    dislikes: ["rules without reasons", "being ignored"],
-    socialDifficulty: "standard",
-    voice: "Jokes around direct questions and uses nicknames once comfortable.",
-    privateGoal: "Discover whether the sealed transit tunnel is really haunted.",
-    insecurity: "He uses jokes to avoid admitting when something scares him.",
-    crushStyle: "teasing",
-  },
-];
-
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.max(minimum, Math.min(maximum, value));
 }
@@ -622,7 +559,10 @@ function contextualFallback(
     const knownCandidate = pacing.preferKnownCharacter
       ? known.find((character) => (character.relationshipLevel ?? 0) > -40)
       : null;
-    const npc = knownCandidate ?? fallbackChildren[story.eventCount % fallbackChildren.length];
+    if (!knownCandidate) {
+      throw new Error("AI-generated scenes require an AI response.");
+    }
+    const npc = knownCandidate;
     const knownNpc = isKnownCharacter(npc, known);
     const givenName = firstName(npc.name);
     return {
@@ -764,6 +704,10 @@ function contextualFallback(
     threadUpdate: noThreadUpdate(),
   };
 }
+
+// Kept temporarily only to preserve the old response shape during a rolling deploy.
+// The route no longer invokes this path: AI failures always return an error.
+void contextualFallback;
 
 const npcSchema = {
   type: "object",
@@ -982,6 +926,13 @@ function normalizeGeneratedEvent(
 }
 
 export async function POST(request: Request) {
+  if (!process.env.OPENAI_API_KEY) {
+    return Response.json(
+      { error: "AI is not configured. Add an API key before starting a scene." },
+      { status: 503 },
+    );
+  }
+
   const body = (await request.json()) as Record<string, unknown>;
   const trigger: EventTrigger =
     body.trigger === "exploration" ||
@@ -1064,6 +1015,12 @@ export async function POST(request: Request) {
   };
 
   const generated = await generateEvent(context).catch(() => null);
+  if (!generated) {
+    return Response.json(
+      { error: "AI is unavailable right now. Please try again." },
+      { status: 502 },
+    );
+  }
   const normalized = generated
     ? normalizeGeneratedEvent(
         generated,
@@ -1075,15 +1032,12 @@ export async function POST(request: Request) {
       )
     : null;
 
-  return Response.json(
-    normalized ??
-      contextualFallback(
-        trigger,
-        area || (activeScene?.location ?? "neighborhood"),
-        known,
-        activeScene,
-        pacing,
-        story,
-      ),
-  );
+  if (!normalized) {
+    return Response.json(
+      { error: "AI returned an invalid scene. Please try again." },
+      { status: 502 },
+    );
+  }
+
+  return Response.json(normalized);
 }

@@ -255,99 +255,6 @@ function closesScene(intent: string) {
   );
 }
 
-function localPlan(
-  intent: string,
-  eventContext: string | null,
-  npcContext: unknown,
-): ActionPlan {
-  const normalized = intent.toLocaleLowerCase();
-  const name = npcName(npcContext);
-  const person = name ? firstName(name) : "the other person";
-  const ending = closesScene(intent) ? "end" : "continue";
-  const blockedText =
-    "That outcome cannot be declared into existence. You can attempt one immediate step toward it, but progress still has to be earned.";
-  const automaticText = name
-    ? `${person} responds to what you do, and the moment moves forward without resistance.`
-    : "You do it without difficulty, and the day moves naturally around the choice.";
-  const sceneTrigger = obviousSceneRequest(intent, Boolean(eventContext));
-
-  if (impossibleClaim(intent)) {
-    return blockedActionPlan(blockedText);
-  }
-
-  if (sceneTrigger) {
-    const neutral = draft("You set out, letting the next part of the day take shape.");
-    return {
-      resolutionMode: "scene",
-      difficulty: "standard",
-      attribute: "Willpower",
-      category: sceneTrigger === "social" ? "social" : "exploration",
-      circumstance: "neutral",
-      risk: "safe",
-      timeCost: "short",
-      moralIntent: "neutral",
-      moralWeight: "none",
-      growthEligible: false,
-      socialImpact: "none",
-      sceneTrigger,
-      sceneContext: intent.slice(0, 100),
-      automatic: neutral,
-      blocked: neutral,
-      outcomes: Object.fromEntries(outcomeTiers.map((tier) => [tier, neutral])) as Record<OutcomeTier, OutcomeDraft>,
-    };
-  }
-
-  const isGift = /\b(?:gift|power|flame|fire|ability|control)\b/.test(normalized);
-  const isStudy = /\b(?:study|read|homework|learn|class)\b/.test(normalized);
-  const isTraining = /\b(?:train|workout|push.?up|run|exercise|lift|spar|practice)\b/.test(normalized);
-  const isRisky = /\b(?:attack|fight|dodge|escape|sneak|climb|convince|persuade|deceive|lie|steal|rescue|save|catch|break into)\b/.test(normalized);
-  const requiresCheck = isGift || isStudy || isTraining || isRisky;
-  const attribute: SkillName = isGift
-    ? "Gift Mastery"
-    : isStudy
-      ? "Intelligence"
-      : /\b(?:run|sprint|dodge|sneak|climb)\b/.test(normalized)
-        ? "Agility"
-        : /\b(?:convince|persuade|deceive)\b/.test(normalized)
-          ? "Rapport"
-          : "Strength";
-  const category: Category = isGift
-    ? "gift"
-    : isStudy
-      ? "study"
-      : isTraining
-        ? "physical"
-        : isRisky
-          ? "other"
-          : "conversation";
-  const outcomes: Record<OutcomeTier, OutcomeDraft> = {
-    major_setback: draft("The attempt falls apart and creates a new, immediate problem."),
-    setback: draft("The attempt does not work, though the failure makes the limit clearer."),
-    mixed: draft("You make partial progress, but it comes with a complication you cannot ignore."),
-    success: draft("The attempt works as intended, grounded in what you can currently do."),
-    breakthrough: draft("The attempt works unusually well and reveals one useful next step."),
-  };
-
-  return {
-    resolutionMode: requiresCheck && !obviousAutomatic(intent) ? "check" : "automatic",
-    difficulty: "standard",
-    attribute,
-    category,
-    circumstance: "neutral",
-    risk: isRisky ? "meaningful" : "safe",
-    timeCost: requiresCheck && (isTraining || isStudy || isGift) ? "session" : "moment",
-    moralIntent: "neutral",
-    moralWeight: "none",
-    growthEligible: isTraining || isStudy || isGift,
-    socialImpact: name ? "minor" : "none",
-    sceneTrigger: "none",
-    sceneContext: "",
-    automatic: draft(automaticText, ending),
-    blocked: draft(blockedText),
-    outcomes,
-  };
-}
-
 function outcomeDraftSchema() {
   return {
     type: "object",
@@ -504,7 +411,9 @@ function normalizePlan(
   gift: string,
 ): ActionPlan {
   if (impossibleClaim(intent)) {
-    return localPlan(intent, eventContext, null);
+    return blockedActionPlan(
+      "That outcome cannot be declared into existence. You can attempt one immediate step toward it, but progress still has to be earned.",
+    );
   }
 
   const giftViolation = giftRuleViolation(intent, gift);
@@ -1018,6 +927,13 @@ export async function POST(request: Request) {
     });
   }
 
+  if (!process.env.OPENAI_API_KEY) {
+    return Response.json(
+      { error: "AI is not configured. Add an API key before resolving this action." },
+      { status: 503 },
+    );
+  }
+
   const context = {
     player: {
       name: typeof body.playerName === "string" ? body.playerName.slice(0, 100) : "the player",
@@ -1055,8 +971,14 @@ export async function POST(request: Request) {
   };
 
   const generated = await generatePlan(context).catch(() => null);
+  if (!generated) {
+    return Response.json(
+      { error: "AI is unavailable right now. Please try again." },
+      { status: 502 },
+    );
+  }
   const plan = normalizePlan(
-    generated ?? localPlan(intent, eventContext, npcContext),
+    generated,
     intent,
     eventContext,
     gift,

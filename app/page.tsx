@@ -261,6 +261,15 @@ function formatInlineText(text: string) {
     });
 }
 
+async function responseError(response: Response, fallback: string) {
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    return typeof body.error === "string" ? body.error : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function AnimatedInlineText({ text }: { text: string }) {
   const parts = text
     .split(/(\*\*[^*\n]+?\*\*|\*[^*\n]+?\*)/g)
@@ -1093,7 +1102,12 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        throw new Error("The next scene beat could not be generated.");
+        throw new Error(
+          await responseError(
+            response,
+            "The next scene beat could not be generated.",
+          ),
+        );
       }
 
       const generatedEvent = (await response.json()) as Omit<WorldEvent, "id">;
@@ -1185,10 +1199,16 @@ export default function Home() {
           : nextEvent.targetTurns,
         turns: current ? current.turns + 1 : 0,
       }));
-    } catch {
-      if (isContinuation && requestToken === eventRequestTokenRef.current) {
-        setWorldEvent(null);
-        setActiveScene(null);
+    } catch (error) {
+      if (requestToken === eventRequestTokenRef.current) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "The next scene beat could not be generated.";
+        setChatMessages((current) => [
+          ...current,
+          { id: Date.now(), role: "world", text: `Error: ${message}` },
+        ]);
       }
     } finally {
       window.clearTimeout(timeout);
@@ -1276,7 +1296,9 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        throw new Error("The world could not judge that action.");
+        throw new Error(
+          await responseError(response, "The world could not judge that action."),
+        );
       }
 
       const result = (await response.json()) as JudgeResult;
@@ -1337,14 +1359,18 @@ export default function Home() {
       });
       setIsResolutionRevealed(false);
       if (eventContext) setWorldEvent(null);
-    } catch {
+    } catch (error) {
       if (requestToken === actionRequestTokenRef.current) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "The world could not judge that action.";
         setChatMessages((current) => [
           ...current,
           {
             id: Date.now() + 1,
             role: "world",
-            text: "The moment pauses before the attempt can resolve. Nothing changes; you can try again.",
+            text: `Error: ${message}`,
           },
         ]);
       }
@@ -1470,7 +1496,11 @@ export default function Home() {
           recentMessages,
         }),
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        throw new Error(
+          await responseError(response, "The message could not be generated."),
+        );
+      }
       const result = (await response.json()) as { text: string };
       if (requestToken !== phoneRequestTokenRef.current) return;
       const id = Date.now();
@@ -1494,8 +1524,30 @@ export default function Home() {
           },
         ]);
       }
-    } catch {
-      // A missed message can be retried without changing the story state.
+    } catch (error) {
+      if (requestToken === phoneRequestTokenRef.current) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "The message could not be generated.";
+        if (showPhone && activePhoneContact === relationship.npc.id) {
+          setPhoneMessages((current) => [
+            ...current,
+            {
+              id: Date.now(),
+              npcId: relationship.npc.id,
+              sender: "npc",
+              text: `Error: ${message}`,
+              read: true,
+            },
+          ]);
+        } else {
+          setChatMessages((current) => [
+            ...current,
+            { id: Date.now(), role: "world", text: `Error: ${message}` },
+          ]);
+        }
+      }
     } finally {
       window.clearTimeout(timeout);
       if (requestToken === phoneRequestTokenRef.current) {
