@@ -191,6 +191,30 @@ function blockedActionPlan(narration: string): ActionPlan {
   };
 }
 
+function automaticActionPlan(narration: string): ActionPlan {
+  const automatic = draft(narration);
+  return {
+    resolutionMode: "automatic",
+    difficulty: "easy",
+    attribute: "Rapport",
+    category: "conversation",
+    circumstance: "neutral",
+    risk: "safe",
+    timeCost: "moment",
+    moralIntent: "neutral",
+    moralWeight: "none",
+    growthEligible: false,
+    socialImpact: "minor",
+    sceneTrigger: "none",
+    sceneContext: "",
+    automatic,
+    blocked: automatic,
+    outcomes: Object.fromEntries(
+      outcomeTiers.map((tier) => [tier, automatic]),
+    ) as Record<OutcomeTier, OutcomeDraft>,
+  };
+}
+
 function impossibleClaim(intent: string) {
   return /\b(?:become|am|turn into) (?:the )?(?:strongest|most powerful|invincible|a god)|\bmaster(?:y|ed)? (?:my |the )?(?:gift|power) instantly\b|\bunlimited power\b|\bi automatically (?:win|succeed|master)\b|\bi (?:win|defeat everyone) instantly\b|\bskip (?:ahead|years)\b/i.test(
     intent,
@@ -210,7 +234,7 @@ function giftRuleViolation(intent: string, gift: string) {
 }
 
 function obviousAutomatic(intent: string) {
-  return /^(?:i\s+)?(?:thank\b|nod\b|listen\b|wait\b|watch\b|observe\b|look quietly\b|answer\b|reply\b|explain\b|apologize\b|wave\b|smile\b|introduce myself\b|say hello\b|say goodbye\b|ask (?:what|when|where|who|why|how|if|whether|their name|his name|her name)\b|call for (?:available )?help\b|hand (?:it|the\b)|give (?:it|the\b)|accept\b|decline\b)/i.test(
+  return /^(?:i\s+)?(?:thank\b|nod\b|listen\b|wait\b|watch\b|observe\b|look quietly\b|answer\b|reply\b|explain\b|apologize\b|wave\b|smile\b|introduce myself\b|say hello\b|say goodbye\b|ask\b|call for (?:available )?help\b|hand (?:it|the\b)|give (?:it|the\b)|accept\b|decline\b)/i.test(
     intent.trim(),
   );
 }
@@ -923,6 +947,38 @@ export async function POST(request: Request) {
       fateDelta: 0,
       relationshipDelta: 0,
       socialImpact: "none",
+      npcThought: null,
+      npcMemory: null,
+    });
+  }
+
+  if (obviousAutomatic(intent)) {
+    const plan = automaticActionPlan(
+      closesScene(intent)
+        ? "You make your departure clear, leaving the moment with a natural pause."
+        : "Your words and small gesture land naturally, leaving the other person space to respond.",
+    );
+    const selected = ensureIntroduction(plan.automatic, npcContext, introduced);
+    return Response.json({
+      mode: "automatic",
+      outcome: null,
+      distribution: null,
+      roll: null,
+      cleanChance: null,
+      difficulty: null,
+      attribute: plan.attribute,
+      category: plan.category,
+      checkSource: "action" satisfies CheckSource,
+      calculationNote: "A straightforward interaction resolves directly.",
+      timeCost: plan.timeCost,
+      sceneDisposition: selected.sceneDisposition,
+      sceneRequest: null,
+      narration: selected.narration,
+      growth: [],
+      gain: 0,
+      fateDelta: 0,
+      relationshipDelta: 0,
+      socialImpact: plan.socialImpact,
       npcThought: null,
       npcMemory: null,
     });
