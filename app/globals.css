@@ -655,6 +655,16 @@ body {
   font-style: italic;
 }
 
+.resolution-note {
+  max-width: 27rem;
+  margin: -0.25rem 0 0;
+  color: #85857f;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  text-align: center;
+  text-wrap: balance;
+}
+
 .relationships-panel,
 .phone-panel {
   display: grid;

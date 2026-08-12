@@ -57,6 +57,8 @@ type TimeCost = "moment" | "short" | "session" | "day";
 type SceneDisposition = "continue" | "end";
 type SocialImpact = "none" | "minor" | "meaningful";
 type DayPeriod = "morning" | "afternoon" | "evening";
+type CheckSource = "routine" | "event" | "action";
+type StatGain = { stat: SkillName; amount: number };
 type ActionResolution = {
   id: number;
   intent: string;
@@ -70,6 +72,9 @@ type ActionResolution = {
   timeCost: TimeCost;
   sceneDisposition: SceneDisposition;
   socialImpact: SocialImpact;
+  checkSource: CheckSource;
+  calculationNote: string;
+  growth: StatGain[];
   gain: number;
   fateDelta: number;
   relationshipDelta: number;
@@ -848,16 +853,24 @@ export default function Home() {
       });
     }
 
-    if (result.gain > 0 && result.attribute === "Gift Mastery") {
-      setGiftMastery((current) => Math.min(100, current + result.gain));
-    } else if (result.gain > 0) {
-      setAttributes((current) => ({
-        ...current,
-        [result.attribute as AttributeName]: Math.min(
-          100,
-          current[result.attribute as AttributeName] + result.gain,
-        ),
-      }));
+    const giftGain = result.growth.find(
+      (entry) => entry.stat === "Gift Mastery",
+    )?.amount;
+    if (giftGain) {
+      setGiftMastery((current) => Math.min(100, current + giftGain));
+    }
+    const attributeGrowth = result.growth.filter(
+      (entry): entry is { stat: AttributeName; amount: number } =>
+        entry.stat !== "Gift Mastery",
+    );
+    if (attributeGrowth.length) {
+      setAttributes((current) => {
+        const next = { ...current };
+        for (const entry of attributeGrowth) {
+          next[entry.stat] = Math.min(100, next[entry.stat] + entry.amount);
+        }
+        return next;
+      });
     }
   }
 
@@ -1140,6 +1153,17 @@ export default function Home() {
             threads: storyThreads,
           },
           eventContext,
+          eventMeta: sceneAtStart
+            ? {
+                beatType: sceneAtStart.beatType,
+                intensity: sceneAtStart.intensity,
+              }
+            : worldEvent
+              ? {
+                  beatType: worldEvent.beatType,
+                  intensity: worldEvent.intensity,
+                }
+              : null,
           npcContext: eventNpc,
           recentContext: eventContext ? chatMessages.slice(-8) : [],
         }),
@@ -2045,7 +2069,14 @@ export default function Home() {
             <section className="resolution-card">
               <header>
                 <span>{actionResolution.difficulty}</span>
-                <p>{actionResolution.attribute.toLowerCase()} check</p>
+                <p>
+                  {actionResolution.checkSource === "routine"
+                    ? "routine · "
+                    : actionResolution.checkSource === "event"
+                      ? "experience · "
+                      : ""}
+                  {actionResolution.attribute.toLowerCase()} check
+                </p>
               </header>
               <div className="outcome-wheel-layout">
                 <div className="outcome-wheel-wrap">
@@ -2084,11 +2115,11 @@ export default function Home() {
               </div>
               <div className={`resolution-result ${isResolutionRevealed ? "resolution-result--visible" : ""}`}>
                 <strong>{outcomeTierLabels[actionResolution.outcome]}</strong>
-                {actionResolution.gain > 0 && (
-                  <span>
-                    +{actionResolution.gain.toFixed(2)} {actionResolution.attribute.toLowerCase()}
+                {actionResolution.growth.map((entry) => (
+                  <span key={entry.stat}>
+                    +{entry.amount.toFixed(2)} {entry.stat.toLowerCase()}
                   </span>
-                )}
+                ))}
                 {actionResolution.fateDelta !== 0 && (
                   <span className="resolution-fate-shift">
                     fate {actionResolution.fateDelta > 0 ? "leans heroic" : "leans darker"}
@@ -2100,6 +2131,9 @@ export default function Home() {
                   </span>
                 )}
               </div>
+              <p className="resolution-note">
+                {actionResolution.calculationNote}
+              </p>
               <button
                 className="resolution-continue"
                 type="button"

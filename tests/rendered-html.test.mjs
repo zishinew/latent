@@ -147,15 +147,15 @@ test("uncertain training uses one truthful five-tier d100 check", async () => {
   );
 });
 
-test("higher relevant skill improves the clean-outcome distribution", async () => {
+test("higher relevant skill improves a non-training performance check", async () => {
   const lowResponse = await postJson("/api/judge", {
     ...baseAction,
-    intent: "Train my strength with a focused workout.",
+    intent: "Try to catch the heavy falling crate.",
     attributes: { ...baseAction.attributes, Strength: 0 },
   });
   const highResponse = await postJson("/api/judge", {
     ...baseAction,
-    intent: "Train my strength with a focused workout.",
+    intent: "Try to catch the heavy falling crate.",
     attributes: { ...baseAction.attributes, Strength: 80 },
   });
   const low = await lowResponse.json();
@@ -170,9 +170,9 @@ test("Gift practice always trains Gift Mastery with tiered growth", async () => 
   const expectedGain = {
     major_setback: 0,
     setback: 0,
-    mixed: 0.29,
-    success: 0.52,
-    breakthrough: 0.78,
+    mixed: 0.19,
+    success: 0.35,
+    breakthrough: 0.63,
   };
   const observed = new Set();
 
@@ -186,8 +186,13 @@ test("Gift practice always trains Gift Mastery with tiered growth", async () => 
 
     assert.equal(result.mode, "check");
     assert.equal(result.attribute, "Gift Mastery");
+    assert.equal(result.checkSource, "routine");
     assert.equal(result.timeCost, "session");
     assert.equal(result.gain, expectedGain[result.outcome]);
+    assert.equal(
+      result.growth.find((entry) => entry.stat === "Gift Mastery")?.amount ?? 0,
+      expectedGain[result.outcome],
+    );
   }
 
   assert.ok(
@@ -195,6 +200,79 @@ test("Gift practice always trains Gift Mastery with tiered growth", async () => 
       ["mixed", "success", "breakthrough"].includes(outcome),
     ),
     "the sample should include at least one growth-granting outcome",
+  );
+});
+
+test("routine training rewards Intelligence and becomes harder near mastery", async () => {
+  const shared = {
+    ...baseAction,
+    intent: "I spend the afternoon training my body.",
+  };
+  const noviceLowIntelligence = await (
+    await postJson("/api/judge", {
+      ...shared,
+      attributes: {
+        ...baseAction.attributes,
+        Strength: 5,
+        Intelligence: 0,
+      },
+    })
+  ).json();
+  const noviceHighIntelligence = await (
+    await postJson("/api/judge", {
+      ...shared,
+      attributes: {
+        ...baseAction.attributes,
+        Strength: 5,
+        Intelligence: 80,
+      },
+    })
+  ).json();
+  const expertHighIntelligence = await (
+    await postJson("/api/judge", {
+      ...shared,
+      attributes: {
+        ...baseAction.attributes,
+        Strength: 85,
+        Intelligence: 80,
+      },
+    })
+  ).json();
+
+  assert.equal(noviceLowIntelligence.checkSource, "routine");
+  assert.ok(
+    noviceHighIntelligence.cleanChance > noviceLowIntelligence.cleanChance,
+    "higher Intelligence should improve training quality",
+  );
+  assert.ok(
+    expertHighIntelligence.cleanChance < noviceHighIntelligence.cleanChance,
+    "a highly developed target stat should be harder to improve",
+  );
+});
+
+test("positive event checks grant stronger multi-stat real-world growth", async () => {
+  let positiveResult;
+
+  for (let attempt = 0; attempt < 30 && !positiveResult; attempt += 1) {
+    const response = await postJson("/api/judge", {
+      ...baseAction,
+      intent: "Try to catch the falling practice barrier before it hits anyone.",
+      eventContext:
+        "A damaged practice barrier tips toward two children during a hero-center drill.",
+      eventMeta: { beatType: "danger", intensity: "high" },
+    });
+    const result = await response.json();
+    if (["mixed", "success", "breakthrough"].includes(result.outcome)) {
+      positiveResult = result;
+    }
+  }
+
+  assert.ok(positiveResult, "the sample should include a positive event outcome");
+  assert.equal(positiveResult.checkSource, "event");
+  assert.ok(positiveResult.gain > 0.63, "event growth should exceed routine practice");
+  assert.ok(
+    positiveResult.growth.length > 1,
+    "real-world experience should develop supporting attributes too",
   );
 });
 

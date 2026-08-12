@@ -48,6 +48,10 @@ type OutcomeTier =
   | "success"
   | "breakthrough";
 type OutcomeWeights = Record<OutcomeTier, number>;
+type RoutineKind = "body" | "study" | "gift";
+type CheckSource = "routine" | "event" | "action";
+type BeatIntensity = "calm" | "low" | "medium" | "high";
+type StatGain = { stat: SkillName; amount: number };
 type OutcomeDraft = {
   narration: string;
   reaction: RelationshipReaction;
@@ -226,6 +230,23 @@ function isGiftPractice(intent: string) {
   const practiceVerb = /\b(?:practice|train|training|exercise|develop|improve|work on|experiment with)\b/;
   const giftTerm = /\b(?:gift|power|ability)\b/;
   return practiceVerb.test(normalized) && giftTerm.test(normalized);
+}
+
+function routineKind(intent: string, hasActiveScene: boolean): RoutineKind | null {
+  if (hasActiveScene) return null;
+  const normalized = intent.toLocaleLowerCase();
+  if (isGiftPractice(intent)) return "gift";
+  if (/\b(?:study|studying|homework|revise|revision)\b/.test(normalized)) {
+    return "study";
+  }
+  if (
+    /\b(?:train|training|workout|work out|exercise|push.?ups?|lift|conditioning)\b/.test(
+      normalized,
+    )
+  ) {
+    return "body";
+  }
+  return null;
 }
 
 function closesScene(intent: string) {
@@ -590,6 +611,229 @@ function selectOutcome(distribution: OutcomeWeights, roll: number): OutcomeTier 
   return "breakthrough";
 }
 
+function currentStat(
+  stat: SkillName,
+  attributes: Record<AttributeName, number>,
+  giftMastery: number,
+) {
+  return stat === "Gift Mastery" ? giftMastery : attributes[stat];
+}
+
+function statGain(
+  stat: SkillName,
+  rawAmount: number,
+  attributes: Record<AttributeName, number>,
+  giftMastery: number,
+): StatGain | null {
+  const room = Math.max(0, 100 - currentStat(stat, attributes, giftMastery));
+  const amount = Number(Math.min(room, Math.max(0, rawAmount)).toFixed(2));
+  return amount > 0 ? { stat, amount } : null;
+}
+
+function compactGrowth(growth: Array<StatGain | null>) {
+  return growth.filter((entry): entry is StatGain => entry !== null);
+}
+
+function routineTarget(kind: RoutineKind): SkillName {
+  if (kind === "study") return "Intelligence";
+  if (kind === "gift") return "Gift Mastery";
+  return "Strength";
+}
+
+function routineDifficulty(target: number): Difficulty {
+  if (target < 25) return "easy";
+  if (target < 55) return "standard";
+  if (target < 80) return "hard";
+  return "extreme";
+}
+
+function routineDistribution(
+  kind: RoutineKind,
+  attributes: Record<AttributeName, number>,
+  giftMastery: number,
+): OutcomeWeights {
+  const target = currentStat(routineTarget(kind), attributes, giftMastery);
+  const intelligence = attributes.Intelligence;
+  const willpower = attributes.Willpower;
+  const specializedSupport =
+    kind === "body"
+      ? attributes.Vigor * 0.05 + attributes.Agility * 0.03
+      : kind === "study"
+        ? attributes.Rapport * 0.02
+        : attributes.Vigor * 0.02;
+  const support = intelligence * 0.14 + willpower * 0.08 + specializedSupport;
+  const clean = clamp(Math.round(58 + support - target * 0.52), 18, 75);
+  const mixed = 20;
+  const negative = 100 - clean - mixed;
+  const breakthrough = clamp(
+    Math.round(clean * clamp(0.08 + intelligence / 500 + willpower / 1000, 0.08, 0.25)),
+    2,
+    Math.max(2, clean - 1),
+  );
+  const majorSetback = Math.max(1, Math.round(negative * 0.08));
+
+  return {
+    major_setback: majorSetback,
+    setback: negative - majorSetback,
+    mixed,
+    success: clean - breakthrough,
+    breakthrough,
+  };
+}
+
+function routineGrowth(
+  kind: RoutineKind,
+  tier: OutcomeTier,
+  attributes: Record<AttributeName, number>,
+  giftMastery: number,
+) {
+  const base: Record<OutcomeTier, number> = {
+    major_setback: 0,
+    setback: 0,
+    mixed: 0.22,
+    success: 0.42,
+    breakthrough: 0.75,
+  };
+  const targetStat = routineTarget(kind);
+  const target = currentStat(targetStat, attributes, giftMastery);
+  const learnability = 0.1 + 0.9 * Math.pow(1 - target / 100, 1.35);
+  const efficiency = 0.82 + attributes.Intelligence / 250 + attributes.Willpower / 500;
+  const primary = base[tier] * learnability * efficiency;
+
+  if (kind === "body") {
+    return compactGrowth([
+      statGain("Strength", primary, attributes, giftMastery),
+      statGain("Vigor", primary * 0.28, attributes, giftMastery),
+      statGain("Agility", primary * 0.15, attributes, giftMastery),
+    ]);
+  }
+  if (kind === "study") {
+    return compactGrowth([
+      statGain("Intelligence", primary, attributes, giftMastery),
+      statGain("Willpower", primary * 0.14, attributes, giftMastery),
+    ]);
+  }
+  return compactGrowth([
+    statGain("Gift Mastery", primary, attributes, giftMastery),
+    statGain("Willpower", primary * 0.2, attributes, giftMastery),
+    statGain("Intelligence", primary * 0.1, attributes, giftMastery),
+  ]);
+}
+
+function routineNarration(kind: RoutineKind, tier: OutcomeTier) {
+  const copy: Record<RoutineKind, Record<OutcomeTier, string>> = {
+    body: {
+      major_setback: "Your form breaks down early, and stopping before you reinforce a bad habit is the only useful choice.",
+      setback: "The workout never finds a steady rhythm. You finish tired, but without meaningful improvement.",
+      mixed: "The session is uneven, yet a few repetitions finally begin to feel controlled and repeatable.",
+      success: "You pace the workout well, correct your form between sets, and finish with measurable progress.",
+      breakthrough: "Everything aligns—breathing, balance, and timing—and the session reveals a much more efficient way to train.",
+    },
+    study: {
+      major_setback: "The material blurs together until continuing would only reinforce the wrong ideas, so you stop and reset.",
+      setback: "You put in the time, but the lesson never settles into a form you can reliably use.",
+      mixed: "Some of the lesson remains tangled, though one difficult idea finally starts to make sense.",
+      success: "You organize the material, test what you remember, and finish with a stronger grasp of the subject.",
+      breakthrough: "A connection between several ideas suddenly clicks, turning the rest of the lesson into something you can navigate confidently.",
+    },
+    gift: {
+      major_setback: "Your Gift refuses to settle into a safe pattern, and you end the session before bad control becomes a habit.",
+      setback: "You repeat the exercise carefully, but your control remains exactly where it began.",
+      mixed: "Your control wavers, yet one brief attempt feels deliberate enough to repeat later.",
+      success: "You isolate one part of your Gift, repeat it under control, and leave with a clearer sense of its limits.",
+      breakthrough: "A stubborn part of your Gift finally responds to intention instead of instinct, opening a reliable new direction for practice.",
+    },
+  };
+  return copy[kind][tier];
+}
+
+function routineNote(kind: RoutineKind) {
+  if (kind === "body") {
+    return "Intelligence improves planning; Willpower, Vigor, and Agility support execution. Progress slows as Strength rises.";
+  }
+  if (kind === "study") {
+    return "Intelligence shapes aptitude while Willpower sustains focus. Familiar material yields less new growth.";
+  }
+  return "Intelligence improves experimentation and Willpower stabilizes control. Gift Mastery becomes harder to raise near mastery.";
+}
+
+function eventGrowth(
+  stat: SkillName,
+  tier: OutcomeTier,
+  difficulty: Difficulty,
+  intensity: BeatIntensity,
+  attributes: Record<AttributeName, number>,
+  giftMastery: number,
+) {
+  const base: Record<OutcomeTier, number> = {
+    major_setback: 0,
+    setback: 0,
+    mixed: 0.75,
+    success: 1.35,
+    breakthrough: 2.2,
+  };
+  const intensityMultiplier: Record<BeatIntensity, number> = {
+    calm: 1.5,
+    low: 1.7,
+    medium: 2,
+    high: 2.3,
+  };
+  const difficultyMultiplier: Record<Difficulty, number> = {
+    easy: 0.9,
+    standard: 1,
+    hard: 1.12,
+    extreme: 1.25,
+  };
+  const target = currentStat(stat, attributes, giftMastery);
+  const learnability = 0.12 + 0.88 * Math.pow(1 - target / 100, 1.15);
+  const reflection = 0.9 + attributes.Intelligence / 500;
+  const primary =
+    base[tier] *
+    intensityMultiplier[intensity] *
+    difficultyMultiplier[difficulty] *
+    learnability *
+    reflection;
+  const related: Partial<Record<SkillName, number>> = {
+    "Gift Mastery": 0,
+  };
+
+  if (stat === "Gift Mastery") {
+    related.Willpower = 0.24;
+    related.Intelligence = 0.14;
+  } else if (stat === "Strength") {
+    related.Vigor = 0.25;
+    related.Agility = 0.12;
+  } else if (stat === "Agility") {
+    related.Vigor = 0.18;
+    related.Willpower = 0.12;
+  } else if (stat === "Vigor") {
+    related.Strength = 0.18;
+    related.Willpower = 0.12;
+  } else if (stat === "Intelligence") {
+    related.Willpower = 0.18;
+  } else if (stat === "Willpower") {
+    related.Vigor = 0.12;
+    related.Intelligence = 0.1;
+  } else if (stat === "Rapport") {
+    related.Willpower = 0.15;
+    related.Intelligence = 0.08;
+  }
+
+  return compactGrowth([
+    statGain(stat, primary, attributes, giftMastery),
+    ...Object.entries(related)
+      .filter(([, multiplier]) => multiplier && multiplier > 0)
+      .map(([relatedStat, multiplier]) =>
+        statGain(
+          relatedStat as SkillName,
+          primary * (multiplier ?? 0),
+          attributes,
+          giftMastery,
+        ),
+      ),
+  ]);
+}
+
 function relationshipDelta(
   reaction: RelationshipReaction,
   socialImpact: SocialImpact,
@@ -713,12 +957,57 @@ export async function POST(request: Request) {
     typeof body.fateScore === "number" ? clamp(body.fateScore, -100, 100) : 0;
   const eventContext =
     typeof body.eventContext === "string" ? body.eventContext.slice(0, 800) : null;
+  const eventMeta =
+    body.eventMeta && typeof body.eventMeta === "object"
+      ? (body.eventMeta as Record<string, unknown>)
+      : null;
+  const eventIntensity: BeatIntensity =
+    eventMeta && ["calm", "low", "medium", "high"].includes(String(eventMeta.intensity))
+      ? (eventMeta.intensity as BeatIntensity)
+      : "low";
   const recentContext = Array.isArray(body.recentContext)
     ? body.recentContext.slice(-8)
     : [];
   const npcContext =
     body.npcContext && typeof body.npcContext === "object" ? body.npcContext : null;
   const introduced = npcWasIntroduced(npcContext, eventContext, recentContext);
+  const routine = routineKind(intent, Boolean(eventContext));
+
+  if (routine) {
+    const target = routineTarget(routine);
+    const distribution = routineDistribution(routine, attributes, giftMastery);
+    const roll = randomInt(100);
+    const outcome = selectOutcome(distribution, roll);
+    const growth = routineGrowth(routine, outcome, attributes, giftMastery);
+    const difficulty = routineDifficulty(
+      currentStat(target, attributes, giftMastery),
+    );
+
+    return Response.json({
+      mode: "check",
+      outcome,
+      distribution,
+      roll,
+      cleanChance: distribution.success + distribution.breakthrough,
+      difficulty,
+      attribute: target,
+      category:
+        routine === "gift" ? "gift" : routine === "study" ? "study" : "physical",
+      checkSource: "routine" satisfies CheckSource,
+      calculationNote: routineNote(routine),
+      timeCost: "session",
+      sceneDisposition: "end",
+      sceneRequest: null,
+      narration: routineNarration(routine, outcome),
+      growth,
+      gain: growth.find((entry) => entry.stat === target)?.amount ?? 0,
+      fateDelta: 0,
+      relationshipDelta: 0,
+      socialImpact: "none",
+      npcThought: null,
+      npcMemory: null,
+    });
+  }
 
   const context = {
     player: {
@@ -769,6 +1058,22 @@ export async function POST(request: Request) {
         : plan.automatic;
   const selected = ensureIntroduction(rawSelected, npcContext, introduced);
   const socialImpact = plan.resolutionMode === "blocked" ? "none" : plan.socialImpact;
+  const isEventCheck = Boolean(eventContext) && plan.resolutionMode === "check";
+  const standardGain = growthGain(plan, outcome, skill);
+  const growth = outcome
+    ? isEventCheck
+      ? eventGrowth(
+          plan.attribute,
+          outcome,
+          plan.difficulty,
+          eventIntensity,
+          attributes,
+          giftMastery,
+        )
+      : compactGrowth([
+          statGain(plan.attribute, standardGain, attributes, giftMastery),
+        ])
+    : [];
 
   return Response.json({
     mode: plan.resolutionMode,
@@ -781,6 +1086,10 @@ export async function POST(request: Request) {
     difficulty: plan.resolutionMode === "check" ? plan.difficulty : null,
     attribute: plan.attribute,
     category: plan.category,
+    checkSource: (isEventCheck ? "event" : "action") satisfies CheckSource,
+    calculationNote: isEventCheck
+      ? "Real-world pressure creates accelerated growth. Difficulty, intensity, Intelligence, and current mastery shape what is learned."
+      : "The outcome is based on the relevant skill, difficulty, risk, and established circumstances.",
     timeCost: plan.resolutionMode === "blocked" ? "moment" : plan.timeCost,
     sceneDisposition:
       plan.resolutionMode === "blocked" ? "continue" : selected.sceneDisposition,
@@ -792,7 +1101,8 @@ export async function POST(request: Request) {
           }
         : null,
     narration: selected.narration,
-    gain: growthGain(plan, outcome, skill),
+    growth,
+    gain: growth.find((entry) => entry.stat === plan.attribute)?.amount ?? 0,
     fateDelta: plan.resolutionMode === "blocked" ? 0 : fateDelta(plan),
     relationshipDelta: relationshipDelta(selected.reaction, socialImpact, npcContext),
     socialImpact,
