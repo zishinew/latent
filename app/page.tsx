@@ -2124,15 +2124,15 @@ export default function Home() {
               </button>
             )}
           </div>
-          <p>
-            {isJudgingAction || isGeneratingEvent
-              ? "writing the next moment..."
-              : worldEvent
-              ? "your response may change more than this moment."
-              : activeScene
-                  ? "finish this interaction or leave before beginning something else."
-                : "ordinary choices resolve directly. uncertain attempts are tested."}
-          </p>
+          {(isJudgingAction || isGeneratingEvent || worldEvent || activeScene) && (
+            <p>
+              {isJudgingAction || isGeneratingEvent
+                ? "writing the next moment..."
+                : worldEvent
+                  ? "your response may change more than this moment."
+                  : "finish this interaction or leave before beginning something else."}
+            </p>
+          )}
           <form className="chat-composer" onSubmit={submitCustomAction}>
             <label htmlFor="custom-action">
               {worldEvent || activeScene
