@@ -25,19 +25,19 @@ function crushIsAgeAppropriate(
 }
 
 async function generateMessage(context: Record<string, unknown>) {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.DASHSCOPE_API_KEY;
   if (!apiKey) return null;
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-5.6-luna",
+      model: "qwen3.7-plus",
       store: false,
-      reasoning: { effort: "low" },
+      enable_thinking: false,
       input: [
         {
           role: "system",
@@ -78,7 +78,7 @@ async function generateMessage(context: Record<string, unknown>) {
 }
 
 export async function POST(request: Request) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.DASHSCOPE_API_KEY) {
     return Response.json(
       { error: "AI is not configured. Add an API key before sending messages." },
       { status: 503 },

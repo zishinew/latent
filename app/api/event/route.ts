@@ -743,19 +743,19 @@ const npcSchema = {
 } as const;
 
 async function generateEvent(context: Record<string, unknown>): Promise<GeneratedEvent | null> {
-  const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = process.env.DASHSCOPE_API_KEY;
   if (!apiKey) return null;
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-5.6-luna",
+      model: "qwen3.7-plus",
       store: false,
-      reasoning: { effort: "medium" },
+      enable_thinking: false,
       input: [
         { role: "system", content: sceneDirectorPrompt },
         { role: "user", content: JSON.stringify(context) },
@@ -926,7 +926,7 @@ function normalizeGeneratedEvent(
 }
 
 export async function POST(request: Request) {
-  if (!process.env.OPENAI_API_KEY) {
+  if (!process.env.DASHSCOPE_API_KEY) {
     return Response.json(
       { error: "AI is not configured. Add an API key before starting a scene." },
       { status: 503 },
