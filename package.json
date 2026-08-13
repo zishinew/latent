@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start",
     "test": "next build",
+    "test:unit": "node --test tests/npc-visibility.test.mjs tests/player-perspective.test.mjs tests/story-continuity.test.mjs tests/exam.test.mjs tests/travel.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

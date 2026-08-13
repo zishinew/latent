@@ -437,6 +437,37 @@ body {
   background: #f7f7f5;
 }
 
+.action-dock > .gameplay-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin: -0.1rem 0 0.65rem;
+  border: 1px solid #c9c8c1;
+  padding: 0.55rem 0.65rem;
+  background: #efefeb;
+}
+
+.action-dock .gameplay-notice p {
+  margin: 0;
+  color: #62625d;
+  font-size: 0.74rem;
+}
+
+.gameplay-notice > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.3rem;
+  margin-left: 0.75rem;
+}
+
+.action-dock .gameplay-notice button {
+  border: 0;
+  padding: 0.15rem 0.25rem;
+  background: transparent;
+  font-size: 0.72rem;
+}
+
 .action-dock > span {
   display: block;
   margin-bottom: 0.35rem;
@@ -554,7 +585,7 @@ body {
   padding: 1.5rem;
   background: rgb(247 247 245 / 88%);
   backdrop-filter: blur(12px);
-  animation: overlay-arrive 280ms ease both;
+  animation: overlay-arrive 300ms var(--ease-out) both;
 }
 
 .resolution-card {
@@ -562,6 +593,7 @@ body {
   justify-items: center;
   width: min(34rem, 100%);
   gap: 1.15rem;
+  animation: resolution-card-arrive 500ms var(--ease-out) both;
 }
 
 .resolution-card > header {
@@ -923,6 +955,16 @@ body {
   align-self: flex-end;
   border-color: #8f8e88;
   background: #ecece7;
+}
+
+.phone-message--system {
+  align-self: center;
+  max-width: 90%;
+  border: 0;
+  padding: 0.25rem;
+  color: #92928c;
+  font-size: 0.7rem;
+  text-align: center;
 }
 
 .phone-thread-empty,
@@ -1904,6 +1946,18 @@ body {
 @keyframes overlay-arrive {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+@keyframes resolution-card-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes outcome-wheel-spin {

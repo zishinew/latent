@@ -1,5 +1,20 @@
 import { actionRefereePrompt } from "../../game-prompts";
-import { getQwenApiKey } from "../../qwen";
+import {
+  concealUndiscoveredNpcName,
+  containsNpcIntroduction,
+  revealNpcAtIntroduction,
+} from "../../npc-visibility";
+import {
+  crushStyles,
+  npcArchetypes,
+  socialDifficulties,
+  type NpcArchetype,
+  type CrushStyle,
+  type NpcProfile,
+  type SocialDifficulty,
+} from "../../characters";
+import { generateQwenJson, getQwenApiKey } from "../../qwen";
+import { isAtLocation, travelDestination, travelNarration } from "../../travel";
 
 const attributeNames = [
   "Strength",
@@ -13,7 +28,7 @@ const attributeNames = [
 type AttributeName = (typeof attributeNames)[number];
 type SkillName = AttributeName | "Gift Mastery";
 const skillNames: SkillName[] = [...attributeNames, "Gift Mastery"];
-type ResolutionMode = "automatic" | "check" | "blocked" | "scene";
+type ResolutionMode = "automatic" | "check" | "blocked";
 type Difficulty = "easy" | "standard" | "hard" | "extreme";
 type Category =
   | "physical"
@@ -50,9 +65,13 @@ type OutcomeTier =
   | "breakthrough";
 type OutcomeWeights = Record<OutcomeTier, number>;
 type RoutineKind = "body" | "study" | "gift";
-type CheckSource = "routine" | "event" | "action";
-type BeatIntensity = "calm" | "low" | "medium" | "high";
+type CheckSource = "routine" | "action";
 type StatGain = { stat: SkillName; amount: number };
+type GeneratedNpc = Omit<NpcProfile, "id">;
+type KnownCharacter = NpcProfile & {
+  level: number;
+  memories: string[];
+};
 type OutcomeDraft = {
   narration: string;
   reaction: RelationshipReaction;
@@ -72,8 +91,8 @@ type ActionPlan = {
   moralWeight: MoralWeight;
   growthEligible: boolean;
   socialImpact: SocialImpact;
-  sceneTrigger: "none" | "exploration" | "social";
-  sceneContext: string;
+  focalNpc: GeneratedNpc | null;
+  location: string | null;
   automatic: OutcomeDraft;
   blocked: OutcomeDraft;
   outcomes: Record<OutcomeTier, OutcomeDraft>;
@@ -146,7 +165,9 @@ function npcWasIntroduced(
   npcContext: unknown,
   eventContext: string | null,
   recentContext: unknown[],
+  explicitState?: boolean,
 ) {
+  if (typeof explicitState === "boolean") return explicitState;
   const name = npcName(npcContext);
   if (!name) return true;
   const context = `${eventContext ?? ""} ${JSON.stringify(recentContext)}`.toLocaleLowerCase();
@@ -181,36 +202,12 @@ function blockedActionPlan(narration: string): ActionPlan {
     moralWeight: "none",
     growthEligible: false,
     socialImpact: "none",
-    sceneTrigger: "none",
-    sceneContext: "",
+    focalNpc: null,
+    location: null,
     automatic: neutral,
     blocked: neutral,
     outcomes: Object.fromEntries(
       outcomeTiers.map((tier) => [tier, neutral]),
-    ) as Record<OutcomeTier, OutcomeDraft>,
-  };
-}
-
-function automaticActionPlan(narration: string): ActionPlan {
-  const automatic = draft(narration);
-  return {
-    resolutionMode: "automatic",
-    difficulty: "easy",
-    attribute: "Rapport",
-    category: "conversation",
-    circumstance: "neutral",
-    risk: "safe",
-    timeCost: "moment",
-    moralIntent: "neutral",
-    moralWeight: "none",
-    growthEligible: false,
-    socialImpact: "minor",
-    sceneTrigger: "none",
-    sceneContext: "",
-    automatic,
-    blocked: automatic,
-    outcomes: Object.fromEntries(
-      outcomeTiers.map((tier) => [tier, automatic]),
     ) as Record<OutcomeTier, OutcomeDraft>,
   };
 }
@@ -233,23 +230,6 @@ function giftRuleViolation(intent: string, gift: string) {
     : null;
 }
 
-function obviousAutomatic(intent: string) {
-  return /^(?:i\s+)?(?:thank\b|nod\b|listen\b|wait\b|watch\b|observe\b|look quietly\b|answer\b|reply\b|explain\b|apologize\b|wave\b|smile\b|introduce myself\b|say hello\b|say goodbye\b|ask\b|call for (?:available )?help\b|hand (?:it|the\b)|give (?:it|the\b)|accept\b|decline\b)/i.test(
-    intent.trim(),
-  );
-}
-
-function obviousSceneRequest(intent: string, hasActiveScene: boolean) {
-  if (hasActiveScene) return null;
-  if (/\b(?:explore|look around|investigate|visit)\b/i.test(intent)) {
-    return "exploration" as const;
-  }
-  if (/\b(?:meet people|make friends|find someone to talk to|look for friends)\b/i.test(intent)) {
-    return "social" as const;
-  }
-  return null;
-}
-
 function isGiftPractice(intent: string) {
   const normalized = intent.toLocaleLowerCase();
   const practiceVerb = /\b(?:practice|train|training|exercise|develop|improve|work on|experiment with)\b/;
@@ -257,8 +237,7 @@ function isGiftPractice(intent: string) {
   return practiceVerb.test(normalized) && giftTerm.test(normalized);
 }
 
-function routineKind(intent: string, hasActiveScene: boolean): RoutineKind | null {
-  if (hasActiveScene) return null;
+function routineKind(intent: string): RoutineKind | null {
   const normalized = intent.toLocaleLowerCase();
   if (isGiftPractice(intent)) return "gift";
   if (/\b(?:study|studying|homework|revise|revision)\b/.test(normalized)) {
@@ -298,141 +277,385 @@ function outcomeDraftSchema() {
   } as const;
 }
 
-async function generatePlan(context: Record<string, unknown>): Promise<ActionPlan | null> {
-  const apiKey = getQwenApiKey();
-  if (!apiKey) return null;
+function shortStrings(value: unknown, count: number, length = 120) {
+  return Array.isArray(value)
+    ? value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.slice(0, length))
+        .slice(0, count)
+    : [];
+}
 
-  const response = await fetch("https://dashscope-intl.aliyuncs.com/compatible-mode/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "qwen3.7-plus",
-      store: false,
-      enable_thinking: false,
-      input: [
-        { role: "system", content: actionRefereePrompt },
-        { role: "user", content: JSON.stringify(context) },
-      ],
-      text: {
-        verbosity: "low",
-        format: {
-          type: "json_schema",
-          name: "latent_action_plan",
-          strict: true,
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              resolutionMode: {
-                type: "string",
-                enum: ["automatic", "check", "blocked", "scene"],
-              },
-              difficulty: {
-                type: "string",
-                enum: ["easy", "standard", "hard", "extreme"],
-              },
-              attribute: { type: "string", enum: skillNames },
-              category: {
-                type: "string",
-                enum: [
-                  "physical",
-                  "study",
-                  "gift",
-                  "social",
-                  "exploration",
-                  "conversation",
-                  "movement",
-                  "other",
-                ],
-              },
-              circumstance: {
-                type: "string",
-                enum: [
-                  "major_disadvantage",
-                  "disadvantage",
-                  "neutral",
-                  "advantage",
-                  "major_advantage",
-                ],
-              },
-              risk: {
-                type: "string",
-                enum: ["safe", "low", "meaningful", "high"],
-              },
-              timeCost: {
-                type: "string",
-                enum: ["moment", "short", "session", "day"],
-              },
-              moralIntent: {
-                type: "string",
-                enum: ["heroic", "neutral", "selfish", "cruel"],
-              },
-              moralWeight: {
-                type: "string",
-                enum: ["none", "minor", "major"],
-              },
-              growthEligible: { type: "boolean" },
-              socialImpact: {
-                type: "string",
-                enum: ["none", "minor", "meaningful"],
-              },
-              sceneTrigger: {
-                type: "string",
-                enum: ["none", "exploration", "social"],
-              },
-              sceneContext: { type: "string" },
-              automatic: outcomeDraftSchema(),
-              blocked: outcomeDraftSchema(),
-              outcomes: {
-                type: "object",
-                additionalProperties: false,
-                properties: Object.fromEntries(
-                  outcomeTiers.map((tier) => [tier, outcomeDraftSchema()]),
-                ),
-                required: outcomeTiers,
-              },
-            },
-            required: [
-              "resolutionMode",
-              "difficulty",
-              "attribute",
-              "category",
-              "circumstance",
-              "risk",
-              "timeCost",
-              "moralIntent",
-              "moralWeight",
-              "growthEligible",
-              "socialImpact",
-              "sceneTrigger",
-              "sceneContext",
-              "automatic",
-              "blocked",
-              "outcomes",
-            ],
-          },
-        },
-      },
-    }),
-  });
+function npcId(name: string) {
+  const slug =
+    name
+      .toLocaleLowerCase()
+      .normalize("NFKD")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "character";
+  return `${slug}-${Math.random().toString(36).slice(2, 7)}`;
+}
 
-  if (!response.ok) return null;
-  const payload = (await response.json()) as {
-    output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+const npcSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    name: { type: "string" },
+    age: { type: "number" },
+    archetype: { type: "string", enum: npcArchetypes },
+    traits: { type: "array", minItems: 3, maxItems: 3, items: { type: "string" } },
+    values: { type: "array", minItems: 2, maxItems: 2, items: { type: "string" } },
+    likes: { type: "array", minItems: 2, maxItems: 2, items: { type: "string" } },
+    dislikes: { type: "array", minItems: 2, maxItems: 2, items: { type: "string" } },
+    socialDifficulty: { type: "string", enum: socialDifficulties },
+    voice: { type: "string" },
+    privateGoal: { type: "string" },
+    insecurity: { type: "string" },
+    crushStyle: { type: "string", enum: crushStyles },
+  },
+  required: [
+    "name",
+    "age",
+    "archetype",
+    "traits",
+    "values",
+    "likes",
+    "dislikes",
+    "socialDifficulty",
+    "voice",
+    "privateGoal",
+    "insecurity",
+    "crushStyle",
+  ],
+} as const;
+
+function generatedNpc(value: unknown): GeneratedNpc | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  if (typeof item.name !== "string" || !item.name.trim()) return null;
+  return {
+    name: item.name.trim().slice(0, 80),
+    age: typeof item.age === "number" ? clamp(item.age, 5, 100) : 8,
+    archetype: npcArchetypes.includes(item.archetype as NpcArchetype)
+      ? (item.archetype as NpcArchetype)
+      : "dandere",
+    traits:
+      shortStrings(item.traits, 3, 100).length === 3
+        ? shortStrings(item.traits, 3, 100)
+        : ["observant", "reserved", "curious"],
+    values:
+      shortStrings(item.values, 2, 100).length === 2
+        ? shortStrings(item.values, 2, 100)
+        : ["patience", "fairness"],
+    likes:
+      shortStrings(item.likes, 2, 100).length === 2
+        ? shortStrings(item.likes, 2, 100)
+        : ["small projects", "quiet places"],
+    dislikes:
+      shortStrings(item.dislikes, 2, 100).length === 2
+        ? shortStrings(item.dislikes, 2, 100)
+        : ["being rushed", "being mocked"],
+    socialDifficulty: socialDifficulties.includes(
+      item.socialDifficulty as SocialDifficulty,
+    )
+      ? (item.socialDifficulty as SocialDifficulty)
+      : "standard",
+    voice:
+      typeof item.voice === "string" && item.voice.trim()
+        ? item.voice.slice(0, 240)
+        : "Brief, concrete sentences with pauses before answering.",
+    privateGoal:
+      typeof item.privateGoal === "string" && item.privateGoal.trim()
+        ? item.privateGoal.slice(0, 240)
+        : "Finish the small task they started without attracting ridicule.",
+    insecurity:
+      typeof item.insecurity === "string" && item.insecurity.trim()
+        ? item.insecurity.slice(0, 240)
+        : "Being laughed at for caring too much about a small project.",
+    crushStyle: crushStyles.includes(item.crushStyle as CrushStyle)
+      ? (item.crushStyle as CrushStyle)
+      : "oblivious",
   };
-  const outputText = payload.output
-    ?.flatMap((item) => item.content ?? [])
-    .find((content) => content.type === "output_text")?.text;
-  return outputText ? (JSON.parse(outputText) as ActionPlan) : null;
+}
+
+function parseNpcProfile(value: unknown): NpcProfile | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  if (
+    typeof item.id !== "string" ||
+    typeof item.name !== "string" ||
+    typeof item.age !== "number" ||
+    !npcArchetypes.includes(item.archetype as NpcArchetype) ||
+    !socialDifficulties.includes(item.socialDifficulty as SocialDifficulty) ||
+    !crushStyles.includes(item.crushStyle as CrushStyle) ||
+    typeof item.voice !== "string" ||
+    typeof item.privateGoal !== "string" ||
+    typeof item.insecurity !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id: item.id.slice(0, 80),
+    name: item.name.slice(0, 80),
+    age: clamp(item.age, 5, 100),
+    archetype: item.archetype as NpcArchetype,
+    traits: shortStrings(item.traits, 3, 100),
+    values: shortStrings(item.values, 2, 100),
+    likes: shortStrings(item.likes, 2, 100),
+    dislikes: shortStrings(item.dislikes, 2, 100),
+    socialDifficulty: item.socialDifficulty as SocialDifficulty,
+    voice: item.voice.slice(0, 240),
+    privateGoal: item.privateGoal.slice(0, 240),
+    insecurity: item.insecurity.slice(0, 240),
+    crushStyle: item.crushStyle as CrushStyle,
+  };
+}
+
+function attachNpcId(
+  generated: GeneratedNpc,
+  identities: NpcProfile[],
+): NpcProfile {
+  const match = identities.find(
+    (identity) =>
+      identity.name.toLocaleLowerCase() === generated.name.toLocaleLowerCase(),
+  );
+  return match ?? { ...generated, id: npcId(generated.name) };
+}
+
+const actionPlanSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    resolutionMode: {
+      type: "string",
+      enum: ["automatic", "check", "blocked"],
+    },
+    difficulty: {
+      type: "string",
+      enum: ["easy", "standard", "hard", "extreme"],
+    },
+    attribute: { type: "string", enum: skillNames },
+    category: {
+      type: "string",
+      enum: [
+        "physical",
+        "study",
+        "gift",
+        "social",
+        "exploration",
+        "conversation",
+        "movement",
+        "other",
+      ],
+    },
+    circumstance: {
+      type: "string",
+      enum: [
+        "major_disadvantage",
+        "disadvantage",
+        "neutral",
+        "advantage",
+        "major_advantage",
+      ],
+    },
+    risk: {
+      type: "string",
+      enum: ["safe", "low", "meaningful", "high"],
+    },
+    timeCost: {
+      type: "string",
+      enum: ["moment", "short", "session", "day"],
+    },
+    moralIntent: {
+      type: "string",
+      enum: ["heroic", "neutral", "selfish", "cruel"],
+    },
+    moralWeight: {
+      type: "string",
+      enum: ["none", "minor", "major"],
+    },
+    growthEligible: { type: "boolean" },
+    socialImpact: {
+      type: "string",
+      enum: ["none", "minor", "meaningful"],
+    },
+    focalNpc: { anyOf: [npcSchema, { type: "null" }] },
+    location: { anyOf: [{ type: "string" }, { type: "null" }] },
+    automatic: outcomeDraftSchema(),
+    blocked: outcomeDraftSchema(),
+    outcomes: {
+      type: "object",
+      additionalProperties: false,
+      properties: Object.fromEntries(
+        outcomeTiers.map((tier) => [tier, outcomeDraftSchema()]),
+      ),
+      required: outcomeTiers,
+    },
+  },
+  required: [
+    "resolutionMode",
+    "difficulty",
+    "attribute",
+    "category",
+    "circumstance",
+    "risk",
+    "timeCost",
+    "moralIntent",
+    "moralWeight",
+    "growthEligible",
+    "socialImpact",
+    "focalNpc",
+    "location",
+    "automatic",
+    "blocked",
+    "outcomes",
+  ],
+};
+
+function oneOf<T extends string>(value: unknown, values: readonly T[]): value is T {
+  return typeof value === "string" && values.includes(value as T);
+}
+
+function parseOutcomeDraft(value: unknown): OutcomeDraft | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const reactions: RelationshipReaction[] = [
+    "very_negative",
+    "negative",
+    "neutral",
+    "positive",
+    "very_positive",
+  ];
+  if (
+    typeof item.narration !== "string" ||
+    !item.narration.trim() ||
+    !oneOf(item.reaction, reactions) ||
+    (item.thought !== null && typeof item.thought !== "string") ||
+    (item.memory !== null && typeof item.memory !== "string") ||
+    !oneOf(item.sceneDisposition, ["continue", "end"] as const)
+  ) {
+    return null;
+  }
+  return {
+    narration: item.narration.trim().slice(0, 800),
+    reaction: item.reaction,
+    thought: typeof item.thought === "string" ? item.thought.slice(0, 300) : null,
+    memory: typeof item.memory === "string" ? item.memory.slice(0, 300) : null,
+    sceneDisposition: item.sceneDisposition,
+  };
+}
+
+function parseActionPlan(value: Record<string, unknown>): ActionPlan | null {
+  const modes: ResolutionMode[] = ["automatic", "check", "blocked"];
+  const difficulties: Difficulty[] = ["easy", "standard", "hard", "extreme"];
+  const categories: Category[] = [
+    "physical",
+    "study",
+    "gift",
+    "social",
+    "exploration",
+    "conversation",
+    "movement",
+    "other",
+  ];
+  const circumstances: Circumstance[] = [
+    "major_disadvantage",
+    "disadvantage",
+    "neutral",
+    "advantage",
+    "major_advantage",
+  ];
+  const risks: Risk[] = ["safe", "low", "meaningful", "high"];
+  const timeCosts: TimeCost[] = ["moment", "short", "session", "day"];
+  const moralIntents: MoralIntent[] = ["heroic", "neutral", "selfish", "cruel"];
+  const moralWeights: MoralWeight[] = ["none", "minor", "major"];
+  const socialImpacts: SocialImpact[] = ["none", "minor", "meaningful"];
+  const automatic = parseOutcomeDraft(value.automatic);
+  const blocked = parseOutcomeDraft(value.blocked);
+  const rawOutcomes =
+    value.outcomes && typeof value.outcomes === "object"
+      ? (value.outcomes as Record<string, unknown>)
+      : null;
+  const outcomeEntries = rawOutcomes
+    ? outcomeTiers.map((tier) => [tier, parseOutcomeDraft(rawOutcomes[tier])] as const)
+    : [];
+  const hasCompleteOutcomes =
+    outcomeEntries.length === outcomeTiers.length &&
+    outcomeEntries.every(([, outcome]) => outcome !== null);
+  const unusedDraft = draft(
+    "The immediate moment passes without any additional consequence.",
+  );
+  const resolvedAutomatic = automatic ?? unusedDraft;
+  const resolvedBlocked = blocked ?? unusedDraft;
+  const resolvedOutcomes = hasCompleteOutcomes
+    ? (Object.fromEntries(outcomeEntries) as Record<OutcomeTier, OutcomeDraft>)
+    : Object.fromEntries(
+        outcomeTiers.map((tier) => [tier, resolvedAutomatic]),
+      ) as Record<OutcomeTier, OutcomeDraft>;
+  const rawNpc = value.focalNpc;
+  const focalNpc =
+    rawNpc === null || rawNpc === undefined ? null : generatedNpc(rawNpc);
+  const location =
+    typeof value.location === "string"
+      ? value.location.trim().slice(0, 100) || null
+      : null;
+
+  if (
+    !oneOf(value.resolutionMode, modes) ||
+    !oneOf(value.difficulty, difficulties) ||
+    !oneOf(value.attribute, skillNames) ||
+    !oneOf(value.category, categories) ||
+    !oneOf(value.circumstance, circumstances) ||
+    !oneOf(value.risk, risks) ||
+    !oneOf(value.timeCost, timeCosts) ||
+    !oneOf(value.moralIntent, moralIntents) ||
+    !oneOf(value.moralWeight, moralWeights) ||
+    typeof value.growthEligible !== "boolean" ||
+    !oneOf(value.socialImpact, socialImpacts) ||
+    (value.resolutionMode === "automatic" && !automatic) ||
+    (value.resolutionMode === "blocked" && !blocked) ||
+    (value.resolutionMode === "check" && !hasCompleteOutcomes)
+  ) {
+    return null;
+  }
+
+  return {
+    resolutionMode: value.resolutionMode,
+    difficulty: value.difficulty,
+    attribute: value.attribute,
+    category: value.category,
+    circumstance: value.circumstance,
+    risk: value.risk,
+    timeCost: value.timeCost,
+    moralIntent: value.moralIntent,
+    moralWeight: value.moralWeight,
+    growthEligible: value.growthEligible,
+    socialImpact: value.socialImpact,
+    focalNpc,
+    location,
+    automatic: resolvedAutomatic,
+    blocked: resolvedBlocked,
+    outcomes: resolvedOutcomes,
+  };
+}
+
+async function generatePlan(
+  context: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<ActionPlan | null> {
+  return generateQwenJson<ActionPlan>({
+    label: "action plan",
+    system: actionRefereePrompt,
+    context,
+    schema: actionPlanSchema,
+    signal,
+    parse: parseActionPlan,
+  });
 }
 
 function normalizePlan(
   plan: ActionPlan,
   intent: string,
-  eventContext: string | null,
   gift: string,
 ): ActionPlan {
   if (impossibleClaim(intent)) {
@@ -446,27 +669,6 @@ function normalizePlan(
     return blockedActionPlan(giftViolation);
   }
 
-  const requestedScene = obviousSceneRequest(intent, Boolean(eventContext));
-  if (requestedScene) {
-    return {
-      ...plan,
-      resolutionMode: "scene",
-      sceneTrigger: requestedScene,
-      sceneContext: plan.sceneContext.trim() || intent.slice(0, 100),
-      socialImpact: "none",
-      moralWeight: "none",
-      growthEligible: false,
-    };
-  }
-
-  if (eventContext && plan.resolutionMode === "scene") {
-    return { ...plan, resolutionMode: "automatic", sceneTrigger: "none" };
-  }
-
-  if (obviousAutomatic(intent) && plan.resolutionMode === "check") {
-    return { ...plan, resolutionMode: "automatic" };
-  }
-
   if (isGiftPractice(intent)) {
     return {
       ...plan,
@@ -475,12 +677,14 @@ function normalizePlan(
       category: "gift",
       timeCost: "session",
       growthEligible: true,
-      sceneTrigger: "none",
-      sceneContext: "",
     };
   }
 
-  if (plan.resolutionMode === "automatic" && closesScene(intent)) {
+  if (
+    plan.resolutionMode === "automatic" &&
+    closesScene(intent) &&
+    !travelDestination(intent)
+  ) {
     return {
       ...plan,
       automatic: { ...plan.automatic, sceneDisposition: "end" },
@@ -488,6 +692,44 @@ function normalizePlan(
   }
 
   return plan;
+}
+
+function travelPlan(
+  plan: ActionPlan,
+  intent: string,
+  location: string | null,
+): ActionPlan {
+  const destination = travelDestination(intent);
+  if (!destination) return plan;
+  const atLocation = isAtLocation(destination, location);
+  const disposition: SceneDisposition = atLocation ? "continue" : "end";
+
+  if (plan.resolutionMode !== "blocked" && plan.resolutionMode !== "check") {
+    return plan.resolutionMode === "automatic"
+      ? {
+          ...plan,
+          automatic: { ...plan.automatic, sceneDisposition: disposition },
+        }
+      : plan;
+  }
+
+  const moment = draft(travelNarration(destination, atLocation), disposition);
+  return {
+    ...plan,
+    resolutionMode: "automatic",
+    category: "movement",
+    timeCost: "short",
+    moralIntent: "neutral",
+    moralWeight: "none",
+    growthEligible: false,
+    socialImpact: "none",
+    focalNpc: null,
+    automatic: moment,
+    blocked: moment,
+    outcomes: Object.fromEntries(
+      outcomeTiers.map((tier) => [tier, moment]),
+    ) as Record<OutcomeTier, OutcomeDraft>,
+  };
 }
 
 function calculateDistribution(
@@ -574,6 +816,92 @@ function routineTarget(kind: RoutineKind): SkillName {
   return "Strength";
 }
 
+const attributeDetection: Array<{ attribute: AttributeName; pattern: RegExp }> = [
+  {
+    attribute: "Strength",
+    pattern: /\b(?:strength|strengthen|muscle|raw power|brute force)\b/i,
+  },
+  {
+    attribute: "Agility",
+    pattern: /\b(?:agility|agile|speed|reflexes|nimbleness|footwork)\b/i,
+  },
+  {
+    attribute: "Willpower",
+    pattern: /\b(?:willpower|will power|resolve|mental fortitude|discipline)\b/i,
+  },
+  {
+    attribute: "Intelligence",
+    pattern: /\b(?:intelligence|intellect|mental acuity|cleverness|knowledge)\b/i,
+  },
+  {
+    attribute: "Vigor",
+    pattern: /\b(?:vigor|stamina|endurance|fitness|breath control)\b/i,
+  },
+  {
+    attribute: "Rapport",
+    pattern: /\b(?:rapport|charisma|charm|people skills|sociability|persuasion)\b/i,
+  },
+];
+
+const practiceIntentPattern =
+  /\b(?:focus on|work on|practice|train|training|workout|work out|exercise|study|studying|revise|develop|improve|drill|condition|hone|sharpen|push.?ups?|lift)\b/i;
+
+function routineAttribute(intent: string): AttributeName | null {
+  if (!practiceIntentPattern.test(intent)) return null;
+  const normalized = intent.toLocaleLowerCase();
+  let earliest: { index: number; attribute: AttributeName } | null = null;
+  for (const { attribute, pattern } of attributeDetection) {
+    const match = pattern.exec(normalized);
+    if (match && (earliest === null || match.index < earliest.index)) {
+      earliest = { index: match.index, attribute };
+    }
+  }
+  return earliest?.attribute ?? null;
+}
+
+function routineCategory(target: SkillName): Category {
+  if (target === "Gift Mastery") return "gift";
+  if (target === "Rapport") return "social";
+  if (target === "Strength" || target === "Agility" || target === "Vigor") {
+    return "physical";
+  }
+  return "study";
+}
+
+function routineSecondaryStats(target: SkillName): Array<{ stat: SkillName; weight: number }> {
+  switch (target) {
+    case "Strength":
+      return [
+        { stat: "Agility", weight: 0.15 },
+        { stat: "Vigor", weight: 0.28 },
+      ];
+    case "Agility":
+      return [
+        { stat: "Vigor", weight: 0.18 },
+        { stat: "Strength", weight: 0.14 },
+      ];
+    case "Vigor":
+      return [
+        { stat: "Strength", weight: 0.16 },
+        { stat: "Agility", weight: 0.12 },
+      ];
+    case "Willpower":
+      return [{ stat: "Intelligence", weight: 0.14 }];
+    case "Intelligence":
+      return [{ stat: "Willpower", weight: 0.14 }];
+    case "Rapport":
+      return [
+        { stat: "Willpower", weight: 0.1 },
+        { stat: "Intelligence", weight: 0.08 },
+      ];
+    case "Gift Mastery":
+      return [
+        { stat: "Willpower", weight: 0.2 },
+        { stat: "Intelligence", weight: 0.1 },
+      ];
+  }
+}
+
 function routineDifficulty(target: number): Difficulty {
   if (target < 25) return "easy";
   if (target < 55) return "standard";
@@ -582,21 +910,27 @@ function routineDifficulty(target: number): Difficulty {
 }
 
 function routineDistribution(
-  kind: RoutineKind,
+  target: SkillName,
   attributes: Record<AttributeName, number>,
   giftMastery: number,
 ): OutcomeWeights {
-  const target = currentStat(routineTarget(kind), attributes, giftMastery);
+  const value = currentStat(target, attributes, giftMastery);
   const intelligence = attributes.Intelligence;
   const willpower = attributes.Willpower;
-  const specializedSupport =
-    kind === "body"
+  const overlap =
+    target === "Strength"
       ? attributes.Vigor * 0.05 + attributes.Agility * 0.03
-      : kind === "study"
-        ? attributes.Rapport * 0.02
-        : attributes.Vigor * 0.02;
-  const support = intelligence * 0.14 + willpower * 0.08 + specializedSupport;
-  const clean = clamp(Math.round(58 + support - target * 0.52), 18, 75);
+      : target === "Agility"
+        ? attributes.Vigor * 0.05 + attributes.Strength * 0.03
+        : target === "Rapport"
+          ? attributes.Vigor * 0.02
+          : target === "Vigor"
+            ? attributes.Strength * 0.04 + attributes.Agility * 0.03
+            : target === "Willpower"
+              ? attributes.Vigor * 0.02
+              : attributes.Vigor * 0.02;
+  const support = intelligence * 0.14 + willpower * 0.08 + overlap;
+  const clean = clamp(Math.round(58 + support - value * 0.52), 18, 75);
   const mixed = 20;
   const negative = 100 - clean - mixed;
   const breakthrough = clamp(
@@ -616,7 +950,7 @@ function routineDistribution(
 }
 
 function routineGrowth(
-  kind: RoutineKind,
+  target: SkillName,
   tier: OutcomeTier,
   attributes: Record<AttributeName, number>,
   giftMastery: number,
@@ -628,144 +962,86 @@ function routineGrowth(
     success: 0.42,
     breakthrough: 0.75,
   };
-  const targetStat = routineTarget(kind);
-  const target = currentStat(targetStat, attributes, giftMastery);
-  const learnability = 0.1 + 0.9 * Math.pow(1 - target / 100, 1.35);
+  const current = currentStat(target, attributes, giftMastery);
+  const learnability = 0.1 + 0.9 * Math.pow(1 - current / 100, 1.35);
   const efficiency = 0.82 + attributes.Intelligence / 250 + attributes.Willpower / 500;
   const primary = base[tier] * learnability * efficiency;
 
-  if (kind === "body") {
-    return compactGrowth([
-      statGain("Strength", primary, attributes, giftMastery),
-      statGain("Vigor", primary * 0.28, attributes, giftMastery),
-      statGain("Agility", primary * 0.15, attributes, giftMastery),
-    ]);
-  }
-  if (kind === "study") {
-    return compactGrowth([
-      statGain("Intelligence", primary, attributes, giftMastery),
-      statGain("Willpower", primary * 0.14, attributes, giftMastery),
-    ]);
-  }
   return compactGrowth([
-    statGain("Gift Mastery", primary, attributes, giftMastery),
-    statGain("Willpower", primary * 0.2, attributes, giftMastery),
-    statGain("Intelligence", primary * 0.1, attributes, giftMastery),
+    statGain(target, primary, attributes, giftMastery),
+    ...routineSecondaryStats(target).map(({ stat, weight }) =>
+      statGain(stat, primary * weight, attributes, giftMastery),
+    ),
   ]);
 }
 
-function routineNarration(kind: RoutineKind, tier: OutcomeTier) {
-  const copy: Record<RoutineKind, Record<OutcomeTier, string>> = {
-    body: {
-      major_setback: "Your form breaks down early, and stopping before you reinforce a bad habit is the only useful choice.",
-      setback: "The workout never finds a steady rhythm. You finish tired, but without meaningful improvement.",
-      mixed: "The session is uneven, yet a few repetitions finally begin to feel controlled and repeatable.",
-      success: "You pace the workout well, correct your form between sets, and finish with measurable progress.",
-      breakthrough: "Everything aligns—breathing, balance, and timing—and the session reveals a much more efficient way to train.",
-    },
-    study: {
-      major_setback: "The material blurs together until continuing would only reinforce the wrong ideas, so you stop and reset.",
-      setback: "You put in the time, but the lesson never settles into a form you can reliably use.",
-      mixed: "Some of the lesson remains tangled, though one difficult idea finally starts to make sense.",
-      success: "You organize the material, test what you remember, and finish with a stronger grasp of the subject.",
-      breakthrough: "A connection between several ideas suddenly clicks, turning the rest of the lesson into something you can navigate confidently.",
-    },
-    gift: {
-      major_setback: "Your Gift refuses to settle into a safe pattern, and you end the session before bad control becomes a habit.",
-      setback: "You repeat the exercise carefully, but your control remains exactly where it began.",
-      mixed: "Your control wavers, yet one brief attempt feels deliberate enough to repeat later.",
-      success: "You isolate one part of your Gift, repeat it under control, and leave with a clearer sense of its limits.",
-      breakthrough: "A stubborn part of your Gift finally responds to intention instead of instinct, opening a reliable new direction for practice.",
-    },
-  };
-  return copy[kind][tier];
+const attributeNarration: Record<
+  AttributeName | "Gift Mastery",
+  Record<OutcomeTier, string>
+> = {
+  Strength: {
+    major_setback: "Your form breaks down early, and stopping before you reinforce a bad habit is the only useful choice.",
+    setback: "The workout never finds a steady rhythm. You finish tired, but without meaningful improvement.",
+    mixed: "The session is uneven, yet a few repetitions finally begin to feel controlled and repeatable.",
+    success: "You pace the workout well, correct your form between sets, and finish with measurable progress.",
+    breakthrough: "Everything aligns—breathing, balance, and timing—and the session reveals a much more efficient way to train.",
+  },
+  Agility: {
+    major_setback: "Your footwork breaks down early, and you stop before a sloppy movement becomes a habit.",
+    setback: "The agility drills never click. You finish quick, but not quick in any way that carries over.",
+    mixed: "One sequence finally lands clean, even if most of the session stays clumsy.",
+    success: "Your transitions tighten—consecutive reps feel faster and more deliberate with every round.",
+    breakthrough: "A movement you've been fighting suddenly flows, and your body finds a more efficient way to shift and recover.",
+  },
+  Willpower: {
+    major_setback: "You lose focus early, and stopping before frustration hardens into a worse habit is the only clean choice.",
+    setback: "The concentration work stays shaky—your control recedes as quickly as you summon it.",
+    mixed: "One difficult stretch of focus holds, even though the rest wavers.",
+    success: "You hold composure through deliberate drills, catching yourself before old impulses slip in.",
+    breakthrough: "You stay calm and clear through a challenge that used to shake you, and the discipline feels repeatable.",
+  },
+  Intelligence: {
+    major_setback: "The material blurs together until continuing would only reinforce the wrong ideas, so you stop and reset.",
+    setback: "You put in the time, but the lesson never settles into a form you can reliably use.",
+    mixed: "Some of the lesson remains tangled, though one difficult idea finally starts to make sense.",
+    success: "You organize the material, test what you remember, and finish with a stronger grasp of the subject.",
+    breakthrough: "A connection between several ideas suddenly clicks, turning the rest of the lesson into something you can navigate confidently.",
+  },
+  Vigor: {
+    major_setback: "Your stamina gives out sooner than expected, and pushing on would only invite injury—so you stop.",
+    setback: "The endurance work never finds a rhythm. You finish spent, but unchanged.",
+    mixed: "One sustained push outlasts the rest, a small gain you can carry forward.",
+    success: "Your endurance climbs through patient work—you recover faster between efforts and finish stronger.",
+    breakthrough: "You push past a familiar exhaustion and rebound far sooner than before, opening a new level of conditioning.",
+  },
+  Rapport: {
+    major_setback: "A conversation exercise stalls completely, and you end it before awkwardness becomes a habit.",
+    setback: "The social drills never land—you read the room, but the timing stays off.",
+    mixed: "One exchange finally connects, giving you a small thread to build on.",
+    success: "You practice attentive listening and easy conversation, and people visibly warm to you.",
+    breakthrough: "A social exercise clicks into place—you read a room instantly and steer it with ease and warmth.",
+  },
+  "Gift Mastery": {
+    major_setback: "Your Gift refuses to settle into a safe pattern, and you end the session before bad control becomes a habit.",
+    setback: "You repeat the exercise carefully, but your control remains exactly where it began.",
+    mixed: "Your control wavers, yet one brief attempt feels deliberate enough to repeat later.",
+    success: "You isolate one part of your Gift, repeat it under control, and leave with a clearer sense of its limits.",
+    breakthrough: "A stubborn part of your Gift finally responds to intention instead of instinct, opening a reliable new direction for practice.",
+  },
+};
+
+function routineNarration(target: SkillName, tier: OutcomeTier) {
+  return attributeNarration[target][tier];
 }
 
-function routineNote(kind: RoutineKind) {
-  if (kind === "body") {
-    return "Intelligence improves planning; Willpower, Vigor, and Agility support execution. Progress slows as Strength rises.";
+function routineNote(target: SkillName) {
+  if (target === "Gift Mastery") {
+    return "Intelligence improves experimentation and Willpower stabilizes control. Gift Mastery becomes harder to raise near mastery.";
   }
-  if (kind === "study") {
-    return "Intelligence shapes aptitude while Willpower sustains focus. Familiar material yields less new growth.";
+  if (target === "Rapport") {
+    return "Rapport grows through practice while Willpower and Intelligence deepen slightly. Social grace becomes harder to raise near mastery.";
   }
-  return "Intelligence improves experimentation and Willpower stabilizes control. Gift Mastery becomes harder to raise near mastery.";
-}
-
-function eventGrowth(
-  stat: SkillName,
-  tier: OutcomeTier,
-  difficulty: Difficulty,
-  intensity: BeatIntensity,
-  attributes: Record<AttributeName, number>,
-  giftMastery: number,
-) {
-  const base: Record<OutcomeTier, number> = {
-    major_setback: 0,
-    setback: 0,
-    mixed: 0.75,
-    success: 1.35,
-    breakthrough: 2.2,
-  };
-  const intensityMultiplier: Record<BeatIntensity, number> = {
-    calm: 1.5,
-    low: 1.7,
-    medium: 2,
-    high: 2.3,
-  };
-  const difficultyMultiplier: Record<Difficulty, number> = {
-    easy: 0.9,
-    standard: 1,
-    hard: 1.12,
-    extreme: 1.25,
-  };
-  const target = currentStat(stat, attributes, giftMastery);
-  const learnability = 0.12 + 0.88 * Math.pow(1 - target / 100, 1.15);
-  const reflection = 0.9 + attributes.Intelligence / 500;
-  const primary =
-    base[tier] *
-    intensityMultiplier[intensity] *
-    difficultyMultiplier[difficulty] *
-    learnability *
-    reflection;
-  const related: Partial<Record<SkillName, number>> = {
-    "Gift Mastery": 0,
-  };
-
-  if (stat === "Gift Mastery") {
-    related.Willpower = 0.24;
-    related.Intelligence = 0.14;
-  } else if (stat === "Strength") {
-    related.Vigor = 0.25;
-    related.Agility = 0.12;
-  } else if (stat === "Agility") {
-    related.Vigor = 0.18;
-    related.Willpower = 0.12;
-  } else if (stat === "Vigor") {
-    related.Strength = 0.18;
-    related.Willpower = 0.12;
-  } else if (stat === "Intelligence") {
-    related.Willpower = 0.18;
-  } else if (stat === "Willpower") {
-    related.Vigor = 0.12;
-    related.Intelligence = 0.1;
-  } else if (stat === "Rapport") {
-    related.Willpower = 0.15;
-    related.Intelligence = 0.08;
-  }
-
-  return compactGrowth([
-    statGain(stat, primary, attributes, giftMastery),
-    ...Object.entries(related)
-      .filter(([, multiplier]) => multiplier && multiplier > 0)
-      .map(([relatedStat, multiplier]) =>
-        statGain(
-          relatedStat as SkillName,
-          primary * (multiplier ?? 0),
-          attributes,
-          giftMastery,
-        ),
-      ),
-  ]);
+  return `${target} grows fastest, with related attributes improving slightly on the side. Progress slows as ${target.toLowerCase()} rises.`;
 }
 
 function relationshipDelta(
@@ -846,21 +1122,44 @@ function growthGain(
   );
 }
 
-function ensureIntroduction(
+function resolveNpcVisibility(
   selected: OutcomeDraft,
   npcContext: unknown,
   introduced: boolean,
 ) {
   const name = npcName(npcContext);
-  if (introduced || !name) return selected;
+  if (introduced || !name) return { draft: selected, introduced };
+  if (containsNpcIntroduction(selected.narration, name)) {
+    return { draft: selected, introduced: true };
+  }
+  const revealed = revealNpcAtIntroduction(selected.narration, name);
+  if (revealed.introduced) {
+    return {
+      draft: { ...selected, narration: revealed.text },
+      introduced: true,
+    };
+  }
   return {
-    ...selected,
-    narration: `“I’m ${firstName(name)}, by the way,” the child says. ${selected.narration}`,
+    draft: {
+      ...selected,
+      narration: concealUndiscoveredNpcName(selected.narration, name),
+      thought: selected.thought
+        ? concealUndiscoveredNpcName(selected.thought, name)
+        : null,
+    },
+    introduced: false,
   };
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as Record<string, unknown>;
+  let body: Record<string, unknown>;
+  try {
+    const parsed = (await request.json()) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return Response.json({ error: "A valid action request is required." }, { status: 400 });
+  }
   const intent =
     typeof body.intent === "string" ? body.intent.trim().slice(0, 300) : "";
   if (!intent) {
@@ -889,39 +1188,53 @@ export async function POST(request: Request) {
     typeof body.giftMastery === "number" ? clamp(body.giftMastery, 0, 100) : 0;
   const fateScore =
     typeof body.fateScore === "number" ? clamp(body.fateScore, -100, 100) : 0;
-  const eventContext =
-    typeof body.eventContext === "string" ? body.eventContext.slice(0, 800) : null;
-  const eventMeta =
-    body.eventMeta && typeof body.eventMeta === "object"
-      ? (body.eventMeta as Record<string, unknown>)
+  const currentLocation =
+    typeof body.location === "string" && body.location.trim()
+      ? body.location.trim().slice(0, 100)
       : null;
-  const sceneState =
-    body.sceneState && typeof body.sceneState === "object"
-      ? (body.sceneState as Record<string, unknown>)
-      : null;
-  const sceneGoalStatus = sceneState?.goalStatus;
-  const unresolvedSceneGoal =
-    Boolean(eventContext && sceneState) &&
-    sceneGoalStatus !== "resolved" &&
-    sceneGoalStatus !== "abandoned";
-  const eventIntensity: BeatIntensity =
-    eventMeta && ["calm", "low", "medium", "high"].includes(String(eventMeta.intensity))
-      ? (eventMeta.intensity as BeatIntensity)
-      : "low";
   const recentContext = Array.isArray(body.recentContext)
     ? body.recentContext.slice(-8)
     : [];
-  const npcContext =
-    body.npcContext && typeof body.npcContext === "object" ? body.npcContext : null;
-  const introduced = npcWasIntroduced(npcContext, eventContext, recentContext);
-  const routine = routineKind(intent, Boolean(eventContext));
+  const npcContextRaw =
+    body.npcContext && typeof body.npcContext === "object"
+      ? body.npcContext
+      : null;
+  const npcContext = parseNpcProfile(npcContextRaw);
+  const known = Array.isArray(body.knownCharacters)
+    ? body.knownCharacters
+        .slice(0, 20)
+        .map((value) => {
+          const profile = parseNpcProfile(value);
+          if (!profile) return null;
+          const record = value && typeof value === "object"
+            ? (value as Record<string, unknown>)
+            : {};
+          const level =
+            typeof record.level === "number" ? clamp(record.level, -100, 100) : 0;
+          const memories = Array.isArray(record.memories)
+            ? record.memories
+                .filter((memory): memory is string => typeof memory === "string")
+                .slice(-10)
+            : [];
+          return { ...profile, level, memories };
+        })
+        .filter((character): character is KnownCharacter => character !== null)
+    : [];
+  const introduced = npcWasIntroduced(
+    npcContext,
+    null,
+    recentContext,
+    typeof body.npcIntroduced === "boolean" ? body.npcIntroduced : undefined,
+  );
+  const routine = routineKind(intent);
+  const focusedAttribute = routineAttribute(intent);
 
-  if (routine) {
-    const target = routineTarget(routine);
-    const distribution = routineDistribution(routine, attributes, giftMastery);
+  if (routine || focusedAttribute) {
+    const target = focusedAttribute ?? routineTarget(routine as RoutineKind);
+    const distribution = routineDistribution(target, attributes, giftMastery);
     const roll = randomInt(100);
     const outcome = selectOutcome(distribution, roll);
-    const growth = routineGrowth(routine, outcome, attributes, giftMastery);
+    const growth = routineGrowth(target, outcome, attributes, giftMastery);
     const difficulty = routineDifficulty(
       currentStat(target, attributes, giftMastery),
     );
@@ -934,14 +1247,12 @@ export async function POST(request: Request) {
       cleanChance: distribution.success + distribution.breakthrough,
       difficulty,
       attribute: target,
-      category:
-        routine === "gift" ? "gift" : routine === "study" ? "study" : "physical",
+      category: routineCategory(target),
       checkSource: "routine" satisfies CheckSource,
-      calculationNote: routineNote(routine),
+      calculationNote: routineNote(target),
       timeCost: "session",
       sceneDisposition: "end",
-      sceneRequest: null,
-      narration: routineNarration(routine, outcome),
+      narration: routineNarration(target, outcome),
       growth,
       gain: growth.find((entry) => entry.stat === target)?.amount ?? 0,
       fateDelta: 0,
@@ -949,38 +1260,9 @@ export async function POST(request: Request) {
       socialImpact: "none",
       npcThought: null,
       npcMemory: null,
-    });
-  }
-
-  if (obviousAutomatic(intent)) {
-    const plan = automaticActionPlan(
-      closesScene(intent)
-        ? "You make your departure clear, leaving the moment with a natural pause."
-        : "Your words and small gesture land naturally, leaving the other person space to respond.",
-    );
-    const selected = ensureIntroduction(plan.automatic, npcContext, introduced);
-    return Response.json({
-      mode: "automatic",
-      outcome: null,
-      distribution: null,
-      roll: null,
-      cleanChance: null,
-      difficulty: null,
-      attribute: plan.attribute,
-      category: plan.category,
-      checkSource: "action" satisfies CheckSource,
-      calculationNote: "A straightforward interaction resolves directly.",
-      timeCost: plan.timeCost,
-      sceneDisposition: selected.sceneDisposition,
-      sceneRequest: null,
-      narration: selected.narration,
-      growth: [],
-      gain: 0,
-      fateDelta: 0,
-      relationshipDelta: 0,
-      socialImpact: plan.socialImpact,
-      npcThought: null,
-      npcMemory: null,
+      npcIntroduced: false,
+      location: currentLocation,
+      focalNpc: null,
     });
   }
 
@@ -1002,44 +1284,28 @@ export async function POST(request: Request) {
       giftMastery,
       fateScore,
     },
-    clock: body.clock && typeof body.clock === "object" ? body.clock : null,
+    exam: body.exam && typeof body.exam === "object" ? body.exam : null,
     story: body.story && typeof body.story === "object" ? body.story : null,
-    activeScene: eventContext
-      ? {
-          currentBeat: eventContext,
-          sceneGoal:
-            typeof sceneState?.sceneGoal === "string"
-              ? sceneState.sceneGoal.slice(0, 240)
-              : null,
-          goalStatus:
-            typeof sceneGoalStatus === "string" ? sceneGoalStatus : null,
-          turns:
-            typeof sceneState?.turns === "number" ? sceneState.turns : null,
-          targetTurns:
-            typeof sceneState?.targetTurns === "number"
-              ? sceneState.targetTurns
-              : null,
-          npc: npcContext,
-          npcIsIntroduced: introduced,
-          recentContext,
-        }
-      : null,
+    location: currentLocation ?? "home",
+    presentNpc: npcContext ? { profile: npcContext, introduced } : null,
+    knownCharacters: known,
+    recentContext,
     attemptedAction: intent,
   };
 
-  const generated = await generatePlan(context).catch(() => null);
+  const generated = await generatePlan(context, request.signal).catch(() => null);
   if (!generated) {
     return Response.json(
       { error: "AI is unavailable right now. Please try again." },
       { status: 502 },
     );
   }
-  const plan = normalizePlan(
-    generated,
+  const plan = travelPlan(
+    normalizePlan(generated, intent, gift),
     intent,
-    eventContext,
-    gift,
+    currentLocation,
   );
+  const travel = travelDestination(intent);
   const skill =
     plan.attribute === "Gift Mastery"
       ? giftMastery
@@ -1056,23 +1322,51 @@ export async function POST(request: Request) {
       : plan.resolutionMode === "blocked"
         ? plan.blocked
         : plan.automatic;
-  const selected = ensureIntroduction(rawSelected, npcContext, introduced);
   const socialImpact = plan.resolutionMode === "blocked" ? "none" : plan.socialImpact;
-  const isEventCheck = Boolean(eventContext) && plan.resolutionMode === "check";
+  const travelDeparture = Boolean(
+    travel && !isAtLocation(travel, currentLocation),
+  );
+  const sceneDisposition: SceneDisposition =
+    plan.resolutionMode === "blocked"
+      ? "continue"
+      : travelDeparture
+        ? "end"
+        : rawSelected.sceneDisposition;
+
+  const identities = known;
+  const declaredNpc = plan.focalNpc
+    ? attachNpcId(plan.focalNpc, npcContext ? [npcContext, ...identities] : identities)
+    : null;
+  let present: NpcProfile | null = declaredNpc;
+  let presentIntroduced = false;
+  if (present) {
+    const presentName = present.name.toLocaleLowerCase();
+    if (
+      npcContext &&
+      presentName === (npcName(npcContext)?.toLocaleLowerCase() ?? "")
+    ) {
+      presentIntroduced = introduced;
+    } else if (
+      known.some((character) => character.name.toLocaleLowerCase() === presentName)
+    ) {
+      presentIntroduced = true;
+    }
+  } else if (!travelDeparture && sceneDisposition === "continue" && npcContext) {
+    const profile = parseNpcProfile(npcContext);
+    present = profile;
+    presentIntroduced = introduced;
+  }
+  const selected = resolveNpcVisibility(rawSelected, present, presentIntroduced);
+  const resolvedLocation = travel
+    ? travel.label
+    : typeof plan.location === "string" && plan.location.trim()
+      ? plan.location.trim().slice(0, 100)
+      : currentLocation;
   const standardGain = growthGain(plan, outcome, skill);
   const growth = outcome
-    ? isEventCheck
-      ? eventGrowth(
-          plan.attribute,
-          outcome,
-          plan.difficulty,
-          eventIntensity,
-          attributes,
-          giftMastery,
-        )
-      : compactGrowth([
-          statGain(plan.attribute, standardGain, attributes, giftMastery),
-        ])
+    ? compactGrowth([
+        statGain(plan.attribute, standardGain, attributes, giftMastery),
+      ])
     : [];
 
   return Response.json({
@@ -1086,30 +1380,27 @@ export async function POST(request: Request) {
     difficulty: plan.resolutionMode === "check" ? plan.difficulty : null,
     attribute: plan.attribute,
     category: plan.category,
-    checkSource: (isEventCheck ? "event" : "action") satisfies CheckSource,
-    calculationNote: isEventCheck
-      ? "Real-world pressure creates accelerated growth. Difficulty, intensity, Intelligence, and current mastery shape what is learned."
-      : "The outcome is based on the relevant skill, difficulty, risk, and established circumstances.",
+    checkSource: "action" satisfies CheckSource,
+    calculationNote:
+      plan.resolutionMode === "check"
+        ? "The outcome is based on the relevant skill, difficulty, risk, and established circumstances."
+        : "The moment resolves without added risk or consequence.",
     timeCost: plan.resolutionMode === "blocked" ? "moment" : plan.timeCost,
-    sceneDisposition:
-      plan.resolutionMode === "blocked" ||
-      (unresolvedSceneGoal && !closesScene(intent))
-        ? "continue"
-        : selected.sceneDisposition,
-    sceneRequest:
-      plan.resolutionMode === "scene" && plan.sceneTrigger !== "none"
-        ? {
-            trigger: plan.sceneTrigger,
-            context: plan.sceneContext.trim() || intent.slice(0, 100),
-          }
-        : null,
-    narration: selected.narration,
+    sceneDisposition,
+    narration: selected.draft.narration,
     growth,
     gain: growth.find((entry) => entry.stat === plan.attribute)?.amount ?? 0,
     fateDelta: plan.resolutionMode === "blocked" ? 0 : fateDelta(plan),
-    relationshipDelta: relationshipDelta(selected.reaction, socialImpact, npcContext),
+    relationshipDelta: relationshipDelta(
+      selected.draft.reaction,
+      socialImpact,
+      present,
+    ),
     socialImpact,
-    npcThought: socialImpact === "none" ? null : selected.thought,
-    npcMemory: socialImpact === "none" ? null : selected.memory,
+    npcThought: socialImpact === "none" ? null : selected.draft.thought,
+    npcMemory: socialImpact === "none" ? null : selected.draft.memory,
+    npcIntroduced: selected.introduced,
+    location: resolvedLocation,
+    focalNpc: present,
   });
 }

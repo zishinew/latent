@@ -30,28 +30,28 @@ type CharacterSection = "name" | "gender" | "attributes" | "gift";
 type GamePhase = "landing" | "creation" | "prologue" | "gameplay";
 type ChatMessage = {
   id: number;
-  role: "world" | "player" | "event" | "thought";
+  role: "world" | "player" | "thought";
   text: string;
 };
 type Difficulty = "easy" | "standard" | "hard" | "extreme";
 type Relationship = {
   npc: NpcProfile;
+  npcIntroduced: boolean;
   level: number;
   interactions: number;
   hasContact: boolean;
   memories: string[];
   lastThought: string | null;
-  metDay: number;
   isEstablished: boolean;
 };
 type PhoneMessage = {
   id: number;
   npcId: string;
-  sender: "player" | "npc";
+  sender: "player" | "npc" | "system";
   text: string;
   read: boolean;
 };
-type ResolutionMode = "automatic" | "check" | "blocked" | "scene";
+type ResolutionMode = "automatic" | "check" | "blocked";
 type OutcomeTier =
   | "major_setback"
   | "setback"
@@ -59,11 +59,9 @@ type OutcomeTier =
   | "success"
   | "breakthrough";
 type OutcomeWeights = Record<OutcomeTier, number>;
-type TimeCost = "moment" | "short" | "session" | "day";
 type SceneDisposition = "continue" | "end";
 type SocialImpact = "none" | "minor" | "meaningful";
-type DayPeriod = "morning" | "afternoon" | "evening";
-type CheckSource = "routine" | "event" | "action";
+type CheckSource = "routine" | "action";
 type StatGain = { stat: SkillName; amount: number };
 type ActionResolution = {
   id: number;
@@ -75,7 +73,6 @@ type ActionResolution = {
   distribution: OutcomeWeights;
   cleanChance: number;
   roll: number;
-  timeCost: TimeCost;
   sceneDisposition: SceneDisposition;
   socialImpact: SocialImpact;
   checkSource: CheckSource;
@@ -87,7 +84,10 @@ type ActionResolution = {
   npcMemory: string | null;
   npcThought: string | null;
   npc: NpcProfile | null;
+  npcIntroduced: boolean;
   narration: string;
+  location: string | null;
+  focalNpc: NpcProfile | null;
 };
 type JudgeResult = Omit<ActionResolution, "id" | "intent" | "npc" | "mode"> & {
   mode: ResolutionMode;
@@ -96,70 +96,35 @@ type JudgeResult = Omit<ActionResolution, "id" | "intent" | "npc" | "mode"> & {
   cleanChance: number | null;
   roll: number | null;
   difficulty: Difficulty | null;
-  sceneRequest: {
-    trigger: "exploration" | "social";
-    context: string;
-  } | null;
+  sceneDisposition: SceneDisposition;
+  location: string | null;
+  focalNpc: NpcProfile | null;
+  npcIntroduced: boolean;
 };
-type BeatType =
-  | "slice_of_life"
-  | "relationship"
-  | "school"
-  | "training"
-  | "exploration"
-  | "mystery"
-  | "danger"
-  | "aftermath";
-type BeatIntensity = "calm" | "low" | "medium" | "high";
-type SceneGoalStatus = "setup" | "progress" | "resolved" | "abandoned";
-type StoryThread = {
+type SchoolDifficulty = "easy" | "medium" | "hard";
+type HeroSchool = {
   id: string;
-  status: "seeded" | "developing" | "urgent" | "resolved";
-  summary: string;
-  lastAdvancedTurn: number;
+  name: string;
+  difficulty: SchoolDifficulty;
+  description: string;
 };
-type StoryBeat = {
-  turn: number;
-  type: BeatType;
-  intensity: BeatIntensity;
-  location: string;
-  summary: string;
+type ExamResult = {
+  schoolId: string;
+  schoolName: string;
+  difficulty: SchoolDifficulty;
+  chance: number;
+  roll: number;
+  accepted: boolean;
+  narration: string;
 };
-type WorldEvent = {
+type RetryRequest =
+  | { kind: "action"; intent: string }
+  | { kind: "exam"; schoolId: string };
+type GameplayNotice = {
   id: number;
   text: string;
-  tone: "opportunity" | "complication" | "danger" | "wonder";
-  beatType: BeatType;
-  intensity: BeatIntensity;
-  location: string;
-  summary: string;
-  sceneGoal: string;
-  goalStatus: SceneGoalStatus;
-  targetTurns: number;
-  choices: string[];
-  npc: NpcProfile | null;
-  sceneStatus: "continue" | "end";
-  threadUpdate: {
-    id: string | null;
-    action: "none" | "seed" | "advance" | "resolve";
-    summary: string | null;
-  };
+  retry: RetryRequest | null;
 };
-type ActiveScene = {
-  id: number;
-  kind: "ambient" | "exploration" | "social";
-  location: string;
-  npc: NpcProfile | null;
-  lastEvent: string;
-  summary: string;
-  sceneGoal: string;
-  goalStatus: SceneGoalStatus;
-  beatType: BeatType;
-  intensity: BeatIntensity;
-  targetTurns: number;
-  turns: number;
-};
-type ActivityMenu = "explore" | "social" | null;
 type AttributePreset = {
   id: string;
   name: string;
@@ -205,26 +170,32 @@ const outcomeTierColors: Record<OutcomeTier, string> = {
   success: "#d8d7d0",
   breakthrough: "#f3f2ed",
 };
-const presetActions = [
-  { label: "train", intent: "I spend the afternoon training my body." },
-  { label: "study", intent: "I study for tomorrow's classes." },
-  { label: "practice gift", intent: "I carefully practice controlling my Gift." },
-  { label: "make friends", intent: "I try to make friends with the neighborhood kids." },
-  { label: "go exploring", intent: "I explore the streets around my neighborhood." },
-] as const;
-const explorationAreas = [
-  "neighborhood park",
-  "shopping street",
-  "riverside path",
-  "community hero center",
-  "old transit yard",
-] as const;
-const socialAreas = [
-  "school playground",
-  "neighborhood park",
-  "community gift class",
-  "local arcade",
-] as const;
+const examTotalTrials = 3;
+const examAcceptColor = "#7e9b7c";
+const examRejectColor = "#6f6f69";
+const heroSchools: HeroSchool[] = [
+  {
+    id: "harbor-view",
+    name: "Harbor View Hero High",
+    difficulty: "easy",
+    description:
+      "A practical, supportive school that accepts most applicants. Its graduates staff rescue teams and support roles across the city.",
+  },
+  {
+    id: "meridian",
+    name: "Meridian Hero Academy",
+    difficulty: "medium",
+    description:
+      "A respected academy with real standards. Serious training, real competition, and a record of producing licensed heroes.",
+  },
+  {
+    id: "zenith",
+    name: "Zenith National Hero High",
+    difficulty: "hard",
+    description:
+      "The elite national school. Brutal trials, famous graduates, and an acceptance list that barely moves for anyone.",
+  },
+];
 const prologueLines = [
   "Seventy-two years ago, the first Gift awakened.",
   "Within a generation, the extraordinary became ordinary.",
@@ -233,7 +204,7 @@ const prologueLines = [
   "Heroes rose because someone had to stand between humanity and the impossible.",
   "In time, heroism became a profession and rescue became an industry.",
   "The greatest among them were shaped inside fiercely competitive academies.",
-  "You are eight years old. The academy gates are still years away, and your story begins at home.",
+  "You are sixteen. The hero high school entrance exam awaits, and the life you want is on the other side of it.",
 ];
 
 function capitalizeName(value: string) {
@@ -363,6 +334,11 @@ function outcomeWheelGradient(distribution: OutcomeWeights) {
   return `conic-gradient(${segments.join(", ")})`;
 }
 
+function examWheelGradient(chance: number) {
+  const accepted = Math.max(0, Math.min(100, chance)) * 3.6;
+  return `conic-gradient(${examAcceptColor} 0deg ${accepted}deg, ${examRejectColor} ${accepted}deg 360deg)`;
+}
+
 function radarPoint(index: number, radius: number) {
   const angle = (attributeAngles[index] * Math.PI) / 180;
   const x = radarCenter + Math.cos(angle) * radius;
@@ -460,11 +436,10 @@ export default function Home() {
   const [characterIdentityLoaded, setCharacterIdentityLoaded] = useState(false);
   const lastNameInputRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLElement>(null);
-  const eventRequestTokenRef = useRef(0);
-  const eventControllerRef = useRef<AbortController | null>(null);
   const actionRequestTokenRef = useRef(0);
   const actionInFlightRef = useRef(false);
   const resolutionAppliedRef = useRef<number | null>(null);
+  const examResultRevealedRef = useRef(false);
   const phoneRequestTokenRef = useRef(0);
   const phoneControllerRef = useRef<AbortController | null>(null);
   const [gender, setGender] = useState("");
@@ -476,14 +451,12 @@ export default function Home() {
   const [giftRerollsUsed, setGiftRerollsUsed] = useState(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [customAction, setCustomAction] = useState("");
-  const [day, setDay] = useState(1);
-  const [dayPeriod, setDayPeriod] = useState<DayPeriod>("afternoon");
   const [storyTurn, setStoryTurn] = useState(0);
-  const [eventCount, setEventCount] = useState(0);
-  const [actionsSinceEvent, setActionsSinceEvent] = useState(0);
-  const [nextEventAt, setNextEventAt] = useState(3);
-  const [recentBeats, setRecentBeats] = useState<StoryBeat[]>([]);
-  const [storyThreads, setStoryThreads] = useState<StoryThread[]>([]);
+  const [location, setLocation] = useState<string | null>("home");
+  const [presentNpc, setPresentNpc] = useState<{
+    profile: NpcProfile;
+    introduced: boolean;
+  } | null>(null);
   const [isJudgingAction, setIsJudgingAction] = useState(false);
   const [actionResolution, setActionResolution] =
     useState<ActionResolution | null>(null);
@@ -491,10 +464,16 @@ export default function Home() {
   const [showSkills, setShowSkills] = useState(false);
   const [giftMastery, setGiftMastery] = useState(0);
   const [fateScore, setFateScore] = useState(0);
-  const [worldEvent, setWorldEvent] = useState<WorldEvent | null>(null);
-  const [activeScene, setActiveScene] = useState<ActiveScene | null>(null);
-  const [isGeneratingEvent, setIsGeneratingEvent] = useState(false);
-  const [activityMenu, setActivityMenu] = useState<ActivityMenu>(null);
+  const [chosenSchoolId, setChosenSchoolId] = useState<string | null>(null);
+  const [examResult, setExamResult] = useState<ExamResult | null>(null);
+  const [examResultSeen, setExamResultSeen] = useState(false);
+  const [isExamResultRevealed, setIsExamResultRevealed] = useState(false);
+  const [isTakingExam, setIsTakingExam] = useState(false);
+  const [isExamActive, setIsExamActive] = useState(false);
+  const [examTrialCount, setExamTrialCount] = useState(0);
+  const [showSchoolPicker, setShowSchoolPicker] = useState(false);
+  const [gameplayNotice, setGameplayNotice] =
+    useState<GameplayNotice | null>(null);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [showRelationships, setShowRelationships] = useState(false);
   const [showPhone, setShowPhone] = useState(false);
@@ -515,12 +494,6 @@ export default function Home() {
   const [attributePresetName, setAttributePresetName] = useState("");
   const [attributePresetsLoaded, setAttributePresetsLoaded] = useState(false);
 
-  const requestAmbientWorldEvent = useEffectEvent(() => {
-    void requestWorldEvent();
-  });
-  const requestAmbientNpcMessage = useEffectEvent((contact: Relationship) => {
-    void generateNpcMessage(contact);
-  });
   const revealResolutionAfterAnimation = useEffectEvent(() => {
     revealResolution();
   });
@@ -536,6 +509,22 @@ export default function Home() {
     );
     return () => window.clearTimeout(timer);
   }, [actionResolution, isResolutionRevealed]);
+
+  const revealExamResultAfterAnimation = useEffectEvent(() => {
+    revealExamResult();
+  });
+
+  useEffect(() => {
+    if (!examResult || isExamResultRevealed || examResultRevealedRef.current) return;
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    const timer = window.setTimeout(
+      revealExamResultAfterAnimation,
+      reduceMotion ? 0 : 2300,
+    );
+    return () => window.clearTimeout(timer);
+  }, [examResult, isExamResultRevealed]);
 
   useEffect(() => {
     let storedFirstName: string | null = null;
@@ -655,47 +644,6 @@ export default function Home() {
   }, [attributePresets, attributePresetsLoaded]);
 
   useEffect(() => {
-    if (
-      phase !== "gameplay" ||
-      isJudgingAction ||
-      actionResolution ||
-      worldEvent ||
-      activeScene ||
-      activityMenu ||
-      showSkills ||
-      showPhone ||
-      showRelationships ||
-      isGeneratingEvent
-    ) {
-      return;
-    }
-
-    const delay =
-      actionsSinceEvent >= nextEventAt
-        ? 1400
-        : 60000 + Math.random() * 60000;
-    const timer = window.setTimeout(() => {
-      requestAmbientWorldEvent();
-    }, delay);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    phase,
-    isJudgingAction,
-    actionResolution,
-    worldEvent,
-    activeScene,
-    activityMenu,
-    showSkills,
-    showPhone,
-    showRelationships,
-    isGeneratingEvent,
-    actionsSinceEvent,
-    nextEventAt,
-    chatMessages.length,
-  ]);
-
-  useEffect(() => {
     if (phase !== "gameplay") return;
 
     const behavior: ScrollBehavior = window.matchMedia(
@@ -720,68 +668,11 @@ export default function Home() {
       window.cancelAnimationFrame(animationFrame);
       window.clearTimeout(settleTimer);
     };
-  }, [
-    phase,
-    chatMessages,
-    isJudgingAction,
-    isGeneratingEvent,
-    worldEvent,
-    activeScene,
-    activityMenu,
-  ]);
-
-  useEffect(() => {
-    if (
-      phase !== "gameplay" ||
-      showPhone ||
-      showRelationships ||
-      actionResolution ||
-      isJudgingAction ||
-      activeScene ||
-      worldEvent ||
-      isGeneratingEvent ||
-      activityMenu ||
-      isGeneratingMessage
-    ) {
-      return;
-    }
-
-    const contacts = relationships.filter(
-      (relationship) => relationship.hasContact,
-    );
-    if (!contacts.length) return;
-
-    const timer = window.setTimeout(() => {
-      const contact = contacts[Math.floor(Math.random() * contacts.length)];
-      requestAmbientNpcMessage(contact);
-    }, 45000 + Math.random() * 45000);
-
-    return () => window.clearTimeout(timer);
-  }, [
-    phase,
-    showPhone,
-    showRelationships,
-    actionResolution,
-    isJudgingAction,
-    activeScene,
-    worldEvent,
-    isGeneratingEvent,
-    activityMenu,
-    isGeneratingMessage,
-    relationships,
-    phoneMessages.length,
-  ]);
+  }, [phase, chatMessages, isJudgingAction, isTakingExam]);
 
   function attributeValue(attribute: AttributeName) {
     const value = attributes[attribute];
     return Number.isFinite(value) ? value : 0;
-  }
-
-  function currentNpcAge(relationship: Relationship) {
-    return (
-      relationship.npc.age +
-      Math.floor(Math.max(0, day - relationship.metDay) / 365)
-    );
   }
 
   const investedPoints = attributeNames.reduce(
@@ -804,17 +695,19 @@ export default function Home() {
       selectedGift &&
       (selectedGift !== "Custom" || customGift.trim()),
   );
-  const characterAge = 8 + Math.floor((day - 1) / 365);
-  const chapterNumber = Math.floor(eventCount / 6) + 1;
-  const chapterBeat = eventCount % 6;
-  const chapterTitle =
-    chapterNumber === 1
-      ? "small beginnings"
-      : chapterNumber === 2
-        ? "fault lines"
-        : chapterNumber === 3
-          ? "first consequences"
-          : `chapter ${chapterNumber}`;
+  const characterAge = 16;
+  const chapterTitle = "coming of age";
+  const chosenSchool =
+    heroSchools.find((school) => school.id === chosenSchoolId) ?? null;
+  const examStatusLabel = examResult
+    ? examResult.accepted
+      ? `enrolled · ${examResult.schoolName}`
+      : "exam results in"
+    : isExamActive
+      ? `entrance exam · trial ${examTrialCount + 1}/${examTotalTrials}`
+      : chosenSchool
+        ? `exam awaits · ${chosenSchool.name}`
+        : "choose your school";
   const chosenGiftDescription =
     selectedGift === "Custom"
       ? `A unique Gift called ${customGift.trim() || "Custom"}. Its capabilities must be discovered gradually and cannot exceed established progression.`
@@ -878,33 +771,9 @@ export default function Home() {
     setPhase("gameplay");
   }
 
-  function advanceClock(timeCost: TimeCost) {
-    if (timeCost === "moment" || timeCost === "short") return;
-
-    if (timeCost === "day") {
-      setDay((current) => current + 1);
-      setDayPeriod("morning");
-      return;
-    }
-
-    setDayPeriod((current) => {
-      if (current === "morning") return "afternoon";
-      if (current === "afternoon") return "evening";
-      setDay((currentDay) => currentDay + 1);
-      return "morning";
-    });
-  }
-
-  function applyResolutionEffects(
-    result: JudgeResult | ActionResolution,
-    npc: NpcProfile | null,
-    wasInScene: boolean,
-  ) {
-    advanceClock(result.timeCost);
+  function applyJudgeResult(result: JudgeResult | ActionResolution) {
+    const npc = result.focalNpc ?? null;
     setStoryTurn((current) => current + 1);
-    if (!wasInScene) {
-      setActionsSinceEvent((current) => current + 1);
-    }
 
     if (result.fateDelta !== 0) {
       setFateScore((current) =>
@@ -929,17 +798,19 @@ export default function Home() {
         );
         const updated: Relationship = {
           npc: existing?.npc ?? npc,
+          npcIntroduced:
+            existing?.npcIntroduced === true || result.npcIntroduced,
           level: nextLevel,
           interactions: nextInteractions,
           hasContact:
             existing?.hasContact === true ||
-            nextLevel >= contactThreshold.level ||
-            nextInteractions >= contactThreshold.interactions,
+            (result.npcIntroduced &&
+              (nextLevel >= contactThreshold.level ||
+                nextInteractions >= contactThreshold.interactions)),
           memories: result.npcMemory
             ? [...(existing?.memories ?? []), result.npcMemory].slice(-10)
             : (existing?.memories ?? []),
           lastThought: result.npcThought ?? existing?.lastThought ?? null,
-          metDay: existing?.metDay ?? day,
           isEstablished:
             existing?.isEstablished === true ||
             nextInteractions >= impactThreshold ||
@@ -973,12 +844,18 @@ export default function Home() {
         return next;
       });
     }
+
+    setLocation((current) => result.location ?? current);
+    setPresentNpc(
+      npc ? { profile: npc, introduced: result.npcIntroduced } : null,
+    );
   }
 
   function appendResolutionNarration(
     narration: string,
     npc: NpcProfile | null,
     npcThought: string | null,
+    npcIntroduced = true,
   ) {
     setChatMessages((current) => [
       ...current,
@@ -988,263 +865,38 @@ export default function Home() {
             {
               id: Date.now() + 2,
               role: "thought" as const,
-              text: `${npc.name.split(/\s+/)[0]}: “${npcThought}”`,
+              text: `${npcIntroduced ? npc.name.split(/\s+/)[0] : "the other child"}: “${npcThought}”`,
             },
           ]
         : []),
     ]);
   }
 
-  function finishSceneBeat(
-    scene: ActiveScene | null,
-    disposition: SceneDisposition,
-    narration: string,
-  ) {
-    if (!scene) return;
-
-    if (disposition === "end") {
-      eventRequestTokenRef.current += 1;
-      eventControllerRef.current?.abort();
-      eventControllerRef.current = null;
-      setWorldEvent(null);
-      setActiveScene(null);
-      return;
-    }
-
-    void requestWorldEvent({
-      trigger: "continuation",
-      context: scene.location,
-      outcome: narration,
-    });
-  }
-
-  async function requestWorldEvent(options?: {
-    trigger?: "ambient" | "exploration" | "social" | "continuation";
-    context?: string;
-    outcome?: string;
-  }) {
-    const trigger = options?.trigger ?? "ambient";
-    const isContinuation = trigger === "continuation";
-    if (
-      phase !== "gameplay" ||
-      eventControllerRef.current !== null ||
-      isGeneratingEvent ||
-      isJudgingAction ||
-      (!isContinuation && (actionResolution || worldEvent || activeScene)) ||
-      (isContinuation && !activeScene)
-    ) {
-      return;
-    }
-
-    const requestToken = ++eventRequestTokenRef.current;
-    setIsGeneratingEvent(true);
-    const controller = new AbortController();
-    eventControllerRef.current = controller;
-    phoneControllerRef.current?.abort();
-    const timeout = window.setTimeout(() => controller.abort(), 12000);
-
-    try {
-      const response = await fetch("/api/event", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          playerName: `${firstName} ${lastName}`.trim(),
-          gender,
-          age: characterAge,
-          gift: chosenGiftName,
-          giftDescription: chosenGiftDescription,
-          attributes,
-          giftMastery,
-          fate: fateLabel,
-          clock: { day, period: dayPeriod },
-          story: {
-            turn: storyTurn,
-            eventCount,
-            chapterNumber,
-            chapterBeat,
-            chapterTitle,
-            actionsSinceEvent,
-            recentBeats,
-            threads: storyThreads,
-          },
-          trigger,
-          triggerContext: options?.context ?? activeScene?.location ?? "",
-          activeScene: activeScene
-            ? {
-                kind: activeScene.kind,
-                location: activeScene.location,
-                npc: activeScene.npc,
-                lastEvent: activeScene.lastEvent,
-                summary: activeScene.summary,
-                sceneGoal: activeScene.sceneGoal,
-                goalStatus: activeScene.goalStatus,
-                beatType: activeScene.beatType,
-                intensity: activeScene.intensity,
-                targetTurns: activeScene.targetTurns,
-                turns: activeScene.turns,
-              }
-            : null,
-          sceneOutcome: options?.outcome ?? null,
-          knownCharacters: relationships.map((relationship) => ({
-            ...relationship.npc,
-            age: currentNpcAge(relationship),
-            relationshipLevel: relationship.level,
-            memories: relationship.memories,
-          })),
-          recentContext: isContinuation
-            ? chatMessages.slice(-8).map((message) => ({
-                role: message.role,
-                text: message.text,
-              }))
-            : [],
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(
-          await responseError(
-            response,
-            "The next scene beat could not be generated.",
-          ),
-        );
-      }
-
-      const generatedEvent = (await response.json()) as Omit<WorldEvent, "id">;
-      if (requestToken !== eventRequestTokenRef.current) return;
-      const nextEvent = {
-        ...generatedEvent,
-        npc:
-          isContinuation && activeScene?.npc
-            ? activeScene.npc
-            : generatedEvent.npc,
-        id: Date.now(),
-      };
-      setActivityMenu(null);
-      setStoryTurn((current) => current + 1);
-      setRecentBeats((current) => [
-        ...current,
-        {
-          turn: storyTurn + 1,
-          type: nextEvent.beatType,
-          intensity: nextEvent.intensity,
-          location: nextEvent.location,
-          summary: nextEvent.summary,
-        },
-      ].slice(-8));
-      if (!isContinuation) {
-        setEventCount((current) => current + 1);
-        setActionsSinceEvent(0);
-        setNextEventAt(2 + Math.floor(Math.random() * 3));
-      }
-      if (
-        nextEvent.threadUpdate.action !== "none" &&
-        nextEvent.threadUpdate.id &&
-        nextEvent.threadUpdate.summary
-      ) {
-        const threadId = nextEvent.threadUpdate.id;
-        const threadSummary = nextEvent.threadUpdate.summary;
-        setStoryThreads((current) => {
-          const existing = current.find(
-            (thread) => thread.id === threadId,
-          );
-          const status =
-            nextEvent.threadUpdate.action === "resolve"
-              ? "resolved"
-              : nextEvent.threadUpdate.action === "advance"
-                ? "developing"
-                : "seeded";
-          const updated: StoryThread = {
-            id: threadId,
-            status,
-            summary: threadSummary,
-            lastAdvancedTurn: storyTurn + 1,
-          };
-          return (existing
-            ? current.map((thread) =>
-                thread.id === updated.id ? updated : thread,
-              )
-            : [...current, updated]
-          ).slice(-6);
-        });
-      }
-      setChatMessages((current) => [
-        ...current,
-        { id: nextEvent.id, role: "event", text: nextEvent.text },
-      ]);
-      if (nextEvent.sceneStatus === "end") {
-        setWorldEvent(null);
-        setActiveScene(null);
-        return;
-      }
-      setWorldEvent(nextEvent);
-      setActiveScene((current) => ({
-        id: current?.id ?? nextEvent.id,
-        kind:
-          current?.kind ??
-          (trigger === "exploration" || trigger === "social"
-            ? trigger
-            : "ambient"),
-        location:
-          current?.location ?? nextEvent.location,
-        npc: nextEvent.npc ?? current?.npc ?? null,
-        lastEvent: nextEvent.text,
-        summary: nextEvent.summary,
-        sceneGoal: current?.sceneGoal ?? nextEvent.sceneGoal,
-        goalStatus: nextEvent.goalStatus,
-        beatType: nextEvent.beatType,
-        intensity: nextEvent.intensity,
-        targetTurns: current
-          ? Math.max(current.targetTurns, nextEvent.targetTurns)
-          : nextEvent.targetTurns,
-        turns: current ? current.turns + 1 : 0,
-      }));
-    } catch (error) {
-      if (requestToken === eventRequestTokenRef.current) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "The next scene beat could not be generated.";
-        setChatMessages((current) => [
-          ...current,
-          { id: Date.now(), role: "world", text: `Error: ${message}` },
-        ]);
-      }
-    } finally {
-      window.clearTimeout(timeout);
-      if (requestToken === eventRequestTokenRef.current) {
-        eventControllerRef.current = null;
-        setIsGeneratingEvent(false);
-      }
-    }
-  }
-
-  async function beginAction(intent: string) {
+  async function beginAction(intent: string, echoPlayer = true) {
     const trimmedIntent = intent.trim();
-    const eventContext = worldEvent?.text ?? activeScene?.lastEvent ?? null;
-    const eventNpc = worldEvent?.npc ?? activeScene?.npc ?? null;
-    const sceneAtStart = activeScene;
 
     if (
       !trimmedIntent ||
       actionInFlightRef.current ||
       isJudgingAction ||
-      isGeneratingEvent ||
       actionResolution !== null
     ) {
       return;
     }
 
     actionInFlightRef.current = true;
+    setGameplayNotice(null);
     phoneControllerRef.current?.abort();
     const requestToken = ++actionRequestTokenRef.current;
     const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 22000);
+    const timeout = window.setTimeout(() => controller.abort(), 35000);
     setIsJudgingAction(true);
-    setChatMessages((current) => [
-      ...current,
-      { id: Date.now(), role: "player", text: trimmedIntent },
-    ]);
+    if (echoPlayer) {
+      setChatMessages((current) => [
+        ...current,
+        { id: Date.now(), role: "player", text: trimmedIntent },
+      ]);
+    }
 
     try {
       const response = await fetch("/api/judge", {
@@ -1261,37 +913,33 @@ export default function Home() {
           attributes,
           giftMastery,
           fateScore,
-          clock: { day, period: dayPeriod },
+          exam: {
+            active: isExamActive,
+            trial: isExamActive ? examTrialCount + 1 : null,
+            totalTrials: isExamActive ? examTotalTrials : null,
+            chosenSchool: chosenSchool
+              ? { name: chosenSchool.name, difficulty: chosenSchool.difficulty }
+              : null,
+            result: examResult
+              ? { accepted: examResult.accepted, school: examResult.schoolName }
+              : null,
+          },
           story: {
             turn: storyTurn,
-            chapterNumber,
-            chapterBeat,
             chapterTitle,
-            recentBeats,
-            threads: storyThreads,
           },
-          eventContext,
-          eventMeta: sceneAtStart
-            ? {
-                beatType: sceneAtStart.beatType,
-                intensity: sceneAtStart.intensity,
-              }
-            : worldEvent
-              ? {
-                  beatType: worldEvent.beatType,
-                  intensity: worldEvent.intensity,
-                }
-              : null,
-          sceneState: sceneAtStart
-            ? {
-                sceneGoal: sceneAtStart.sceneGoal,
-                goalStatus: sceneAtStart.goalStatus,
-                turns: sceneAtStart.turns,
-                targetTurns: sceneAtStart.targetTurns,
-              }
-            : null,
-          npcContext: eventNpc,
-          recentContext: eventContext ? chatMessages.slice(-8) : [],
+          location,
+          npcContext: presentNpc?.profile ?? null,
+          npcIntroduced: presentNpc?.introduced ?? false,
+          knownCharacters: relationships.map((relationship) => ({
+            ...relationship.npc,
+            level: relationship.level,
+            memories: relationship.memories,
+          })),
+          recentContext: chatMessages.slice(-8).map((message) => ({
+            role: message.role,
+            text: message.text,
+          })),
         }),
       });
 
@@ -1304,33 +952,21 @@ export default function Home() {
       const result = (await response.json()) as JudgeResult;
       if (requestToken !== actionRequestTokenRef.current) return;
 
-      if (result.mode === "scene" && result.sceneRequest && !sceneAtStart) {
-        const sceneRequest = result.sceneRequest;
-        void requestWorldEvent({
-          trigger: sceneRequest.trigger,
-          context: sceneRequest.context,
-        });
-        return;
-      }
-
       if (result.mode === "blocked") {
-        appendResolutionNarration(result.narration, null, null);
+        applyJudgeResult(result);
+        appendResolutionNarration(result.narration, result.focalNpc, result.npcThought, result.npcIntroduced);
         return;
       }
 
       if (result.mode === "automatic") {
-        if (eventContext) setWorldEvent(null);
-        applyResolutionEffects(result, eventNpc, Boolean(sceneAtStart));
+        applyJudgeResult(result);
         appendResolutionNarration(
           result.narration,
-          eventNpc,
+          result.focalNpc,
           result.npcThought,
+          result.npcIntroduced,
         );
-        finishSceneBeat(
-          sceneAtStart,
-          result.sceneDisposition,
-          result.narration,
-        );
+        advanceExamTrial();
         return;
       }
 
@@ -1355,24 +991,20 @@ export default function Home() {
         roll: result.roll,
         id: Date.now(),
         intent: trimmedIntent,
-        npc: eventNpc,
+        npc: result.focalNpc,
+        npcIntroduced: result.npcIntroduced,
       });
       setIsResolutionRevealed(false);
-      if (eventContext) setWorldEvent(null);
     } catch (error) {
       if (requestToken === actionRequestTokenRef.current) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "The world could not judge that action.";
-        setChatMessages((current) => [
-          ...current,
-          {
-            id: Date.now() + 1,
-            role: "world",
-            text: `Error: ${message}`,
-          },
-        ]);
+        const timedOut = error instanceof DOMException && error.name === "AbortError";
+        setGameplayNotice({
+          id: Date.now(),
+          text: timedOut
+            ? "That response took too long. Nothing has changed."
+            : "The world lost its place for a moment. Nothing has changed.",
+          retry: { kind: "action", intent: trimmedIntent },
+        });
       }
     } finally {
       window.clearTimeout(timeout);
@@ -1390,15 +1022,24 @@ export default function Home() {
     if (
       !intent ||
       isJudgingAction ||
-      isGeneratingEvent ||
       actionResolution !== null
     ) {
       return;
     }
 
     setCustomAction("");
-    setActivityMenu(null);
     void beginAction(intent);
+  }
+
+  function retryGameplayRequest() {
+    const retry = gameplayNotice?.retry;
+    if (!retry || isJudgingAction) return;
+    if (retry.kind === "action") {
+      void beginAction(retry.intent, false);
+      return;
+    }
+    const school = heroSchools.find((item) => item.id === retry.schoolId);
+    if (school) void takeExam(school);
   }
 
   function revealResolution() {
@@ -1412,11 +1053,7 @@ export default function Home() {
 
     resolutionAppliedRef.current = actionResolution.id;
     setIsResolutionRevealed(true);
-    applyResolutionEffects(
-      actionResolution,
-      actionResolution.npc,
-      Boolean(activeScene),
-    );
+    applyJudgeResult(actionResolution);
   }
 
   function closeResolution() {
@@ -1430,41 +1067,143 @@ export default function Home() {
 
     const resolvedAction = actionResolution;
     resolutionAppliedRef.current = null;
-    const sceneAtResolution = activeScene;
     appendResolutionNarration(
       resolvedAction.narration,
       resolvedAction.npc,
       resolvedAction.npcThought,
+      resolvedAction.npcIntroduced,
     );
+    advanceExamTrial();
     setActionResolution(null);
     setIsResolutionRevealed(false);
-    finishSceneBeat(
-      sceneAtResolution,
-      resolvedAction.sceneDisposition,
-      resolvedAction.narration,
-    );
   }
 
-  function leaveActiveScene() {
-    if (!activeScene || isJudgingAction || actionResolution) return;
-    eventRequestTokenRef.current += 1;
-    eventControllerRef.current?.abort();
-    eventControllerRef.current = null;
-    setIsGeneratingEvent(false);
-    setWorldEvent(null);
-    setActiveScene(null);
-    setActivityMenu(null);
-    advanceClock("short");
-    setStoryTurn((current) => current + 1);
+  function chooseSchool(school: HeroSchool) {
+    if (examResult || isTakingExam || isExamActive) return;
+    setChosenSchoolId(school.id);
+    void beginExam(school);
+  }
+
+  function openExamHall(school: HeroSchool) {
+    setLocation(`${school.name} — entrance exam hall`);
+    setPresentNpc(null);
     setChatMessages((current) => [
       ...current,
       {
         id: Date.now(),
         role: "world",
-        text: activeScene.npc
-          ? `You end the conversation with ${activeScene.npc.name.split(/\s+/)[0]} and leave ${activeScene.location}.`
-          : `You leave ${activeScene.location} behind and return to your day.`,
+        text: `You report to ${school.name} and are led into the exam hall with the other candidates. A proctor calls your name — the trials begin now.`,
       },
+    ]);
+  }
+
+  function beginExam(school: HeroSchool) {
+    if (isTakingExam || examResult || isExamActive) return;
+    setShowSchoolPicker(false);
+    setGameplayNotice(null);
+    setIsExamActive(true);
+    setExamTrialCount(0);
+    setIsExamResultRevealed(false);
+    examResultRevealedRef.current = false;
+    setChosenSchoolId(school.id);
+    openExamHall(school);
+  }
+
+  function advanceExamTrial() {
+    if (!isExamActive) return;
+    const next = examTrialCount + 1;
+    setExamTrialCount(next);
+    if (next >= examTotalTrials) {
+      setIsExamActive(false);
+      const school =
+        heroSchools.find((item) => item.id === chosenSchoolId) ?? null;
+      if (school) void takeExam(school);
+    }
+  }
+
+  function revealExamResult() {
+    if (
+      !examResult ||
+      isExamResultRevealed ||
+      examResultRevealedRef.current
+    ) {
+      return;
+    }
+    examResultRevealedRef.current = true;
+    setIsExamResultRevealed(true);
+  }
+
+  async function takeExam(school: HeroSchool) {
+    if (isTakingExam || examResult) return;
+    setIsTakingExam(true);
+    setShowSchoolPicker(false);
+    setGameplayNotice(null);
+
+    try {
+      const response = await fetch("/api/exam", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerName: `${firstName} ${lastName}`.trim(),
+          gender,
+          age: characterAge,
+          gift: chosenGiftName,
+          giftDescription: chosenGiftDescription,
+          attributes,
+          giftMastery,
+          schoolName: school.name,
+          schoolDifficulty: school.difficulty,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(
+          await responseError(response, "The exam could not be scored."),
+        );
+      }
+
+      const result = (await response.json()) as {
+        accepted: boolean;
+        chance: number;
+        roll: number;
+        narration: string;
+        school: { name: string; difficulty: SchoolDifficulty };
+      };
+      setExamResult({
+        schoolId: school.id,
+        schoolName: result.school?.name || school.name,
+        difficulty: result.school?.difficulty || school.difficulty,
+        chance: result.chance,
+        roll: result.roll,
+        accepted: result.accepted,
+        narration: result.narration,
+      });
+      setExamResultSeen(false);
+      setIsExamResultRevealed(false);
+      examResultRevealedRef.current = false;
+      setIsTakingExam(false);
+    } catch (error) {
+      setIsTakingExam(false);
+      setGameplayNotice({
+        id: Date.now(),
+        text:
+          error instanceof DOMException && error.name === "AbortError"
+            ? "The exam results took too long to arrive. You can try again."
+            : "The exam results were lost in transit. Nothing has changed.",
+        retry: { kind: "exam", schoolId: school.id },
+      });
+    }
+  }
+
+  function acknowledgeExamResult() {
+    if (!examResult || examResultSeen) return;
+    setExamResultSeen(true);
+    setIsTakingExam(false);
+    setIsExamActive(false);
+    examResultRevealedRef.current = false;
+    setChatMessages((current) => [
+      ...current,
+      { id: Date.now(), role: "world", text: examResult.narration },
     ]);
   }
 
@@ -1476,7 +1215,7 @@ export default function Home() {
     const requestToken = ++phoneRequestTokenRef.current;
     const controller = new AbortController();
     phoneControllerRef.current = controller;
-    const timeout = window.setTimeout(() => controller.abort(), 12000);
+    const timeout = window.setTimeout(() => controller.abort(), 30000);
     setIsGeneratingMessage(true);
 
     try {
@@ -1488,7 +1227,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          npc: { ...relationship.npc, age: currentNpcAge(relationship) },
+          npc: relationship.npc,
           protagonistAge: characterAge,
           level: relationship.level,
           memories: relationship.memories,
@@ -1526,25 +1265,19 @@ export default function Home() {
       }
     } catch (error) {
       if (requestToken === phoneRequestTokenRef.current) {
-        const message =
-          error instanceof Error
-            ? error.message
-            : "The message could not be generated.";
         if (showPhone && activePhoneContact === relationship.npc.id) {
           setPhoneMessages((current) => [
             ...current,
             {
               id: Date.now(),
               npcId: relationship.npc.id,
-              sender: "npc",
-              text: `Error: ${message}`,
+              sender: "system",
+              text:
+                error instanceof DOMException && error.name === "AbortError"
+                  ? "The reply is taking too long. You can try sending another message."
+                  : "The reply did not arrive. You can try sending another message.",
               read: true,
             },
-          ]);
-        } else {
-          setChatMessages((current) => [
-            ...current,
-            { id: Date.now(), role: "world", text: `Error: ${message}` },
           ]);
         }
       }
@@ -2029,10 +1762,13 @@ export default function Home() {
       ? (actionResolution.roll - 0.5) * 3.6
       : 0;
     const wheelRotation = 1440 + (360 - landingAngle);
+    const examLandingAngle = examResult ? (examResult.roll - 0.5) * 3.6 : 0;
+    const examWheelRotation = 1440 + (360 - examLandingAngle);
     const unreadMessages = phoneMessages.filter((message) => !message.read).length;
     const phoneContacts = relationships.filter((relationship) => relationship.hasContact);
     const establishedRelationships = relationships.filter(
-      (relationship) => relationship.isEstablished,
+      (relationship) =>
+        relationship.isEstablished && relationship.npcIntroduced,
     );
     const activeRelationship = relationships.find(
       (relationship) => relationship.npc.id === activePhoneContact,
@@ -2047,11 +1783,11 @@ export default function Home() {
           <h1 className="game-title">latent.</h1>
           <div className="gameplay-identity">
             <div className="gameplay-context">
-              <small>{chapterTitle}</small>
+              <small>
+                {chapterTitle} · {examStatusLabel}
+              </small>
               <p>
                 age {characterAge}
-                <span aria-hidden="true"> · </span>
-                day {day}, {dayPeriod}
                 <span aria-hidden="true"> · </span>
                 {firstName.toLowerCase()} {lastName.toLowerCase()}
                 <span aria-hidden="true"> · </span>
@@ -2061,6 +1797,13 @@ export default function Home() {
               </p>
             </div>
             <div className="gameplay-tools">
+              <button
+                type="button"
+                onClick={() => setShowSchoolPicker(true)}
+                disabled={Boolean(examResult)}
+              >
+                schools{chosenSchool && !examResult ? " · chosen" : ""}
+              </button>
               <button type="button" onClick={() => setShowRelationships(true)}>
                 relationships{establishedRelationships.length ? ` · ${establishedRelationships.length}` : ""}
               </button>
@@ -2077,15 +1820,15 @@ export default function Home() {
           <div className="chat-transcript">
             <div className="chat-message chat-message--world">
               <span>world</span>
-              <p>You are eight years old.</p>
+              <p>You are sixteen.</p>
             </div>
             <div className="chat-message chat-message--world">
               <span>world</span>
               <p>
-                Morning light reaches across your bedroom floor. Outside, children
-                practice their Gifts between apartment towers while a licensed hero
-                patrols overhead. The academy entrance exams are still years away.
-                Today is yours to shape.
+                The entrance exam for hero high school is open. Your desk is
+                stacked with training schedules, and three schools wait for your
+                choice: one safe, one demanding, one nearly impossible. Train,
+                then take the exam when you are ready.
               </p>
             </div>
             {chatMessages.map((message) => (
@@ -2096,10 +1839,8 @@ export default function Home() {
                 <span>
                   {message.role === "player"
                     ? "you"
-                    : message.role === "event"
-                      ? "event"
-                      : message.role === "thought"
-                        ? "surface thought"
+                    : message.role === "thought"
+                      ? "surface thought"
                       : "world"}
                 </span>
                 <p>
@@ -2111,85 +1852,54 @@ export default function Home() {
                 </p>
               </div>
             ))}
-            {(isJudgingAction || isGeneratingEvent) && <ChatSkeleton />}
+            {(isJudgingAction || isTakingExam) && <ChatSkeleton />}
           </div>
         </section>
-        <aside className={`action-dock ${activeScene ? "action-dock--scene" : ""}`} aria-label="Suggested actions">
-          <span>
-            {isJudgingAction || isGeneratingEvent
-              ? "the world is responding"
-              : worldEvent
-              ? "the moment demands an answer"
-              : activeScene
-                ? "the scene is still unfolding"
-              : activityMenu === "explore"
-                ? "where do you want to explore?"
-                : activityMenu === "social"
-                  ? "where do you want to meet people?"
-                  : "choose an action"}
-          </span>
-          <div>
-            {(worldEvent
-              ? worldEvent.choices.map((choice) => ({ label: choice, intent: choice }))
-              : activeScene
-                ? []
-              : activityMenu === "explore"
-                ? explorationAreas.map((area) => ({ label: area, intent: area }))
-                : activityMenu === "social"
-                  ? socialAreas.map((area) => ({ label: area, intent: area }))
-                  : presetActions
-            ).map((action) => (
+        <aside className="action-dock" aria-label="Action">
+          {gameplayNotice && (
+            <div className="gameplay-notice" role="status">
+              <p>{gameplayNotice.text}</p>
+              <div>
+                {gameplayNotice.retry && (
+                  <button type="button" onClick={retryGameplayRequest}>
+                    try again
+                  </button>
+                )}
                 <button
                   type="button"
-                  key={action.label}
-                  onClick={() => {
-                    if (!worldEvent && activityMenu === "explore") {
-                      void requestWorldEvent({ trigger: "exploration", context: action.intent });
-                    } else if (!worldEvent && activityMenu === "social") {
-                      void requestWorldEvent({ trigger: "social", context: action.intent });
-                    } else if (!worldEvent && action.label === "go exploring") {
-                      setActivityMenu("explore");
-                    } else if (!worldEvent && action.label === "make friends") {
-                      setActivityMenu("social");
-                    } else {
-                      void beginAction(action.intent);
-                    }
-                  }}
-                  disabled={isJudgingAction || isGeneratingEvent || actionResolution !== null}
+                  onClick={() => setGameplayNotice(null)}
+                  aria-label="Dismiss message"
                 >
-                  {formatInlineText(action.label)}
+                  dismiss
                 </button>
-              ))}
-            {activeScene && (
-              <button
-                className="action-leave"
-                type="button"
-                onClick={leaveActiveScene}
-                disabled={isJudgingAction || actionResolution !== null}
-              >
-                leave
-              </button>
-            )}
-            {activityMenu && !worldEvent && (
-              <button type="button" onClick={() => setActivityMenu(null)}>
-                back
-              </button>
-            )}
-          </div>
-          {(isJudgingAction || isGeneratingEvent || worldEvent || activeScene) && (
-            <p>
-              {isJudgingAction || isGeneratingEvent
-                ? "writing the next moment..."
-                : worldEvent
-                  ? "your response may change more than this moment."
-                  : "finish this interaction or leave before beginning something else."}
-            </p>
+              </div>
+            </div>
           )}
+          <span>
+            {isJudgingAction || isTakingExam
+              ? "the world is responding"
+              : isExamActive
+                ? `entrance exam — trial ${examTrialCount + 1} of ${examTotalTrials}. the proctor is watching.`
+                : presentNpc && presentNpc.introduced
+                  ? `${presentNpc.profile.name.split(/\s+/)[0]} is with you`
+                  : presentNpc
+                    ? "a stranger is with you"
+                    : storyTurn === 0
+                      ? "choose an action"
+                      : "what do you do?"}
+          </span>
+          <p className="action-dock-location">
+            at {location ? location.toLowerCase() : "home"}
+            {presentNpc
+              ? ` · ${presentNpc.introduced ? presentNpc.profile.name.split(/\s+/)[0] : "a stranger"}`: ""}
+          </p>
           <form className="chat-composer" onSubmit={submitCustomAction}>
             <label htmlFor="custom-action">
-              {worldEvent || activeScene
-                ? "or respond in your own words"
-                : "or choose your own action"}
+              {isExamActive
+                ? "take your next step in the trial"
+                : presentNpc
+                  ? "or respond in your own words"
+                  : "or choose your own action"}
             </label>
             <div>
               <input
@@ -2197,14 +1907,14 @@ export default function Home() {
                 value={customAction}
                 onChange={(event) => setCustomAction(event.target.value)}
                 placeholder={
-                  worldEvent || activeScene
+                  presentNpc
                     ? "what do you do or say?"
                     : "what do you want to attempt?"
                 }
                 autoComplete="off"
                 disabled={
                   isJudgingAction ||
-                  isGeneratingEvent ||
+                  isTakingExam ||
                   actionResolution !== null
                 }
               />
@@ -2213,7 +1923,7 @@ export default function Home() {
                 disabled={
                   !customAction.trim() ||
                   isJudgingAction ||
-                  isGeneratingEvent ||
+                  isTakingExam ||
                   actionResolution !== null
                 }
               >
@@ -2230,9 +1940,7 @@ export default function Home() {
                 <p>
                   {actionResolution.checkSource === "routine"
                     ? "routine · "
-                    : actionResolution.checkSource === "event"
-                      ? "experience · "
-                      : ""}
+                    : ""}
                   {actionResolution.attribute.toLowerCase()} check
                 </p>
               </header>
@@ -2297,6 +2005,117 @@ export default function Home() {
                 type="button"
                 onClick={closeResolution}
                 disabled={!isResolutionRevealed}
+              >
+                continue
+              </button>
+            </section>
+          </div>
+        )}
+        {showSchoolPicker && !examResult && (
+          <div className="relationships-overlay" role="dialog" aria-modal="true" aria-label="Hero high school applications">
+            <section className="relationships-panel">
+              <header className="panel-header">
+                <div>
+                  <span>choose your school</span>
+                  <h2>hero high schools</h2>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowSchoolPicker(false)}
+                  disabled={isExamActive || isTakingExam}
+                >
+                  close
+                </button>
+              </header>
+              <div className="relationship-list">
+                {heroSchools.map((school) => {
+                  const applied = chosenSchoolId === school.id;
+                  return (
+                    <article className="relationship-card" key={school.id}>
+                      <div>
+                        <h3>{school.name}</h3>
+                        <p>
+                          <small>{school.difficulty} admission</small>
+                          {school.description}
+                        </p>
+                      </div>
+                      <footer>
+                        <span>
+                          {applied
+                            ? "your exam awaits"
+                            : "one exam per candidate"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => chooseSchool(school)}
+                          disabled={
+                            Boolean(examResult) || isTakingExam || applied
+                          }
+                        >
+                          {applied ? "chosen" : "take the exam"}
+                        </button>
+                      </footer>
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+        )}
+        {examResult && !examResultSeen && (
+          <div className="resolution-overlay" role="dialog" aria-modal="true" aria-label="Exam result">
+            <section className="resolution-card">
+              <header>
+                <span>{examResult.difficulty}</span>
+                <p>
+                  {examResult.schoolName.toLowerCase()} · entrance exam
+                </p>
+              </header>
+              <div className="outcome-wheel-layout">
+                <div className="outcome-wheel-wrap">
+                  <i aria-hidden="true" />
+                  <div
+                    className="outcome-wheel"
+                    key={examResult.roll}
+                    onAnimationEnd={revealExamResult}
+                    style={
+                      {
+                        "--wheel-rotation": `${examWheelRotation}deg`,
+                        background: examWheelGradient(examResult.chance),
+                      } as React.CSSProperties
+                    }
+                    role="img"
+                    aria-label="A two-segment acceptance wheel"
+                  />
+                  <div className="outcome-wheel-center" aria-hidden="true">
+                    <span>d100</span>
+                  </div>
+                </div>
+                <div className="outcome-tier-legend" aria-label="Acceptance chances">
+                  <span>
+                    <i aria-hidden="true" style={{ background: examAcceptColor }} />
+                    accepted
+                    <small>{examResult.chance}%</small>
+                  </span>
+                  <span>
+                    <i aria-hidden="true" style={{ background: examRejectColor }} />
+                    not accepted
+                    <small>{100 - examResult.chance}%</small>
+                  </span>
+                </div>
+              </div>
+              <div className={`resolution-result ${isExamResultRevealed ? "resolution-result--visible" : ""}`}>
+                <strong>{examResult.accepted ? "accepted" : "not accepted"}</strong>
+                <span>
+                  roll {examResult.roll} · acceptance chance {examResult.chance}%
+                </span>
+              </div>
+              <p className="resolution-note">{examResult.narration}</p>
+              <button
+                className="resolution-continue"
+                type="button"
+                onClick={acknowledgeExamResult}
+                disabled={!isExamResultRevealed}
               >
                 continue
               </button>
@@ -2400,7 +2219,7 @@ export default function Home() {
                         <div>
                           <h3>{relationship.npc.name}</h3>
                           <p>
-                            age {currentNpcAge(relationship)} · {relationship.npc.traits.slice(0, Math.min(relationship.interactions, 2)).join(" · ") || "still unfamiliar"}
+                            age {relationship.npc.age} · {relationship.npc.traits.slice(0, Math.min(relationship.interactions, 2)).join(" · ") || "still unfamiliar"}
                           </p>
                         </div>
                         {perceivesThoughts && (
